@@ -1,13 +1,35 @@
 {
-  "name": "clawket-web",
-  "private": true,
+  "name": "@clawket/web",
   "version": "2.2.1",
+  "description": "Clawket web dashboard — React + Vite build artifact consumed by @clawket/daemon",
   "type": "module",
+  "main": "dist/index.html",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clawket/web.git"
+  },
+  "homepage": "https://github.com/clawket/clawket",
+  "keywords": [
+    "clawket",
+    "dashboard",
+    "react",
+    "vite"
+  ],
+  "author": "Seungwoo Lee",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
