@@ -23,9 +23,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: pnpm publish --access public --no-git-checks
+      - name: Publish to npm (skip if NPM_TOKEN unset)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not set — skipping npm publish"
+            exit 0
+          fi
+          pnpm publish --access public --no-git-checks
       - name: Package dist tarball
         run: tar -czvf clawket-web-${GITHUB_REF_NAME}.tar.gz dist
       - uses: softprops/action-gh-release@v2
