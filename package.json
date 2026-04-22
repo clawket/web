@@ -1,7 +1,7 @@
 {
   "name": "@clawket/web",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Clawket web dashboard — React + Vite SPA distributed as a GitHub Release tarball",
   "type": "module",
   "scripts": {
