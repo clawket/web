@@ -5,11 +5,22 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
+// Resolution order:
+//   1. CLAWKET_DAEMON_URL  (explicit override, wins outright)
+//   2. $CLAWKET_CACHE_DIR/clawketd.port
+//   3. $XDG_CACHE_HOME/clawket/clawketd.port
+//   4. ~/.cache/clawket/clawketd.port
 function getDaemonUrl() {
+  if (process.env.CLAWKET_DAEMON_URL) return process.env.CLAWKET_DAEMON_URL
+
+  const cacheDir =
+    process.env.CLAWKET_CACHE_DIR ??
+    (process.env.XDG_CACHE_HOME
+      ? join(process.env.XDG_CACHE_HOME, 'clawket')
+      : join(homedir(), '.cache', 'clawket'))
+
   try {
-    const port = readFileSync(
-      join(homedir(), '.cache', 'clawket', 'clawketd.port'), 'utf-8'
-    ).trim()
+    const port = readFileSync(join(cacheDir, 'clawketd.port'), 'utf-8').trim()
     return `http://127.0.0.1:${port}`
   } catch {
     return 'http://127.0.0.1:3456'
