@@ -1,0 +1,40 @@
+{
+  "git": {
+    "commitMessage": "chore: release v${version}",
+    "tagName": "v${version}",
+    "tagAnnotation": "Release v${version}",
+    "push": true,
+    "requireBranch": "main"
+  },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}",
+    "autoGenerate": true,
+    "assets": ["clawket-web-v*.tar.gz"]
+  },
+  "npm": {
+    "publish": false
+  },
+  "hooks": {
+    "before:github:release": "tar -czvf clawket-web-v${version}.tar.gz dist"
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "preset": {
+        "name": "conventionalcommits",
+        "types": [
+          { "type": "feat", "section": "Features" },
+          { "type": "fix", "section": "Bug Fixes" },
+          { "type": "perf", "section": "Performance" },
+          { "type": "refactor", "section": "Refactoring" },
+          { "type": "docs", "section": "Documentation" },
+          { "type": "chore", "hidden": true },
+          { "type": "ci", "hidden": true },
+          { "type": "test", "hidden": true },
+          { "type": "style", "hidden": true },
+          { "type": "build", "hidden": true }
+        ]
+      }
+    }
+  }
+}

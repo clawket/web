@@ -1,30 +1,161 @@
 name: Release
 
+# Clawket Node package release template (mcp, web).
+# Trigger: push to main → release-it (conventional-commit 기반) 자동 버전업
+# → GitHub Release + npm publish (OIDC trusted publishing) → clawket/clawket
+# 레포에 components.json 업데이트 PR.
+#
+# Required org-level secret (clawket org 전체 공유):
+#   - CLAWKET_RELEASE_PAT : fine-grained PAT, clawket org 모든 레포에
+#     `contents: write` + `pull_requests: write` 권한
+#
+# Required repo setup:
+#   - release-it 및 @release-it/conventional-changelog 가 devDependencies 에 있어야 함
+#   - .release-it.json 설정 (private-toolkit/workflows/PUBLISH.md 참조)
+#   - npm Trusted Publishing 설정 (workflow filename = release.yml)
+#
+# Assumptions:
+#   - 패키지 루트 = 레포 루트
+#   - Tag format: v${version}
+#   - Plugin manifest key = 레포 이름 (mcp, web)
+
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      tag: ${{ steps.read_version.outputs.tag }}
+      released: ${{ steps.read_version.outputs.released }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@11.5.2
+
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - name: Package dist tarball
-        run: tar -czvf clawket-web-${GITHUB_REF_NAME}.tar.gz dist
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            clawket-web-*.tar.gz
-          generate_release_notes: true
+          version: 10.11.0
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm build
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Capture version before release
+        id: before
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check for release-worthy commits
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Conventional Commits → SemVer policy.
+          # Only feat/fix/perf and breaking changes trigger a release.
+          # ci/docs/chore/refactor/test/style/build commits do not release.
+          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          RANGE="${LAST_TAG:+${LAST_TAG}..HEAD}"
+          RANGE="${RANGE:-HEAD}"
+
+          if [ -n "$LAST_TAG" ] && [ -z "$(git log ${LAST_TAG}..HEAD --oneline)" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No new commits since $LAST_TAG"
+            exit 0
+          fi
+
+          # Capture log output into variables first. Piping `git log | grep -q`
+          # under `set -o pipefail` is a trap: grep -q closes stdin on first
+          # match, git log then dies with SIGPIPE (141), pipefail propagates
+          # that as the pipeline exit, and the conditional treats the branch
+          # as false. Here-strings sidestep the pipe entirely.
+          SUBJECTS=$(git log $RANGE --format='%s')
+          BODIES=$(git log $RANGE --format='%B')
+          if grep -qE '^BREAKING CHANGE:' <<< "$BODIES" \
+             || grep -qE '^[a-z]+(\(.+\))?!:' <<< "$SUBJECTS" \
+             || grep -qE '^(feat|fix|perf)(\(.+\))?:' <<< "$SUBJECTS"; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No release-worthy commits since ${LAST_TAG:-<init>}"
+          fi
+
+      - name: Release (release-it)
+        if: steps.gate.outputs.release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx release-it --ci
+
+      - name: Read version after release
+        id: read_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          BEFORE="${{ steps.before.outputs.version }}"
+          if [ "$VERSION" = "$BEFORE" ]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  bump-manifest:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update components.json in clawket/clawket
+        env:
+          GH_TOKEN: ${{ secrets.CLAWKET_RELEASE_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          TAG="${{ needs.release.outputs.tag }}"
+          BRANCH="bump/${REPO_NAME}-${TAG}"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/clawket/clawket.git" plugin
+          cd plugin
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+
+          jq --arg key "$REPO_NAME" --arg ver "$TAG" \
+            '.[$key] = $ver' components.json > components.json.tmp
+          mv components.json.tmp components.json
+
+          git add components.json
+          git commit -m "chore: bump ${REPO_NAME} to ${TAG}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: bump ${REPO_NAME} to ${TAG}" \
+            --body "Auto-generated from ${GITHUB_REPOSITORY} release ${TAG}."
