@@ -6,11 +6,43 @@ import api from '../api';
 interface TimelineViewProps {
   projectId: string;
   onSelectTask: (taskId: string) => void;
+  /** US-CLAWKET-WEB-TIME-005 — SSE task delta buffer from App.tsx. Re-render
+   *  is currently driven by the App-level mount key (keyed off patchSeq);
+   *  the prop is accepted for the contract and for future incremental updates. */
+  taskPatches?: Map<string, Task | null>;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+// Daemon serializes timestamps as ISO strings (ts_iso) but TS types still say
+// `number`. Convert defensively for arithmetic and Date construction.
+function toMs(ts: number | string | null | undefined): number {
+  if (ts == null) return NaN;
+  if (typeof ts === 'number') return ts;
+  const parsed = Date.parse(ts);
+  return Number.isNaN(parsed) ? NaN : parsed;
+}
+
+// A run with no ended_at can be either currently running (recent start) or
+// orphaned (started long ago, never closed by daemon). Treat orphans as
+// session_ended snapshots so they don't paint a giant "running" bar across
+// the whole swimlane and hide every completed run below.
+const STALE_RUN_MS = 60 * 60 * 1000; // 1h
+
+function effectiveEnd(run: Run, now: number): { endMs: number; result: string } {
+  const endMs = toMs(run.ended_at);
+  if (Number.isFinite(endMs)) {
+    return { endMs, result: run.result || 'session_ended' };
+  }
+  const startedMs = toMs(run.started_at);
+  if (Number.isFinite(startedMs) && now - startedMs > STALE_RUN_MS) {
+    return { endMs: startedMs, result: 'session_ended' };
+  }
+  return { endMs: now, result: run.result || 'running' };
+}
+
 function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return '-';
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   const h = Math.floor(ms / 3_600_000);
@@ -18,13 +50,17 @@ function formatDuration(ms: number): string {
   return `${h}h ${m}m`;
 }
 
-function formatTime(ts: number): string {
-  const d = new Date(ts);
+function formatTime(ts: number | string): string {
+  const ms = toMs(ts);
+  if (!Number.isFinite(ms)) return '--:--';
+  const d = new Date(ms);
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-function formatDate(ts: number): string {
-  const d = new Date(ts);
+function formatDate(ts: number | string): string {
+  const ms = toMs(ts);
+  if (!Number.isFinite(ms)) return '--';
+  const d = new Date(ms);
   const today = new Date();
   if (d.toDateString() === today.toDateString()) return 'Today';
   const yesterday = new Date(today);
@@ -55,7 +91,7 @@ const EVENT_CONFIG: Record<TimelineEventType, { icon: string; color: string; dot
   status_change: { icon: '●', color: 'text-primary', dotColor: 'bg-primary' },
   assignment:    { icon: '→', color: 'text-foreground', dotColor: 'bg-foreground' },
   comment:       { icon: '◇', color: 'text-foreground', dotColor: 'bg-muted' },
-  artifact:      { icon: '□', color: 'text-foreground', dotColor: 'bg-accent' },
+  knowledge:     { icon: '□', color: 'text-foreground', dotColor: 'bg-accent' },
   run_start:     { icon: '▶', color: 'text-warning', dotColor: 'bg-warning' },
   run_end:       { icon: '■', color: 'text-success', dotColor: 'bg-success' },
   question:      { icon: '◇', color: 'text-warning', dotColor: 'bg-warning' },
@@ -71,7 +107,7 @@ function describeEvent(ev: TimelineEvent): { action: string; target: string; det
     case 'status_change': return { action: `${actor} changed status`, target: title, detail: `${d.old_value || '?'} → ${d.new_value || '?'}` };
     case 'assignment': return { action: d.new_value ? `Assigned to @${d.new_value}` : `${actor} unassigned`, target: title };
     case 'comment': return { action: `${actor} commented`, target: title, detail: d.body?.slice(0, 80) };
-    case 'artifact': return { action: `${d.artifact_type || 'Artifact'} added`, target: title };
+    case 'knowledge': return { action: `${d.artifact_type || 'Knowledge'} added`, target: title };
     case 'run_start': return { action: `${actor} started`, target: title };
     case 'run_end': return { action: `${actor} finished`, target: title, detail: [d.result, d.duration_ms != null ? formatDuration(d.duration_ms) : null].filter(Boolean).join(' · ') };
     case 'question': return { action: `${actor} asked`, target: title, detail: d.body?.slice(0, 80) };
@@ -92,7 +128,10 @@ interface CycleProgress {
   total: number;
 }
 
-export default function TimelineView({ projectId, onSelectTask }: TimelineViewProps) {
+export default function TimelineView({ projectId, onSelectTask, taskPatches: _taskPatches }: TimelineViewProps) {
+  // See BoardView: TimelineView re-mounts via the App-level key, so the prop
+  // is intentionally unread here but kept for future incremental patching.
+  void _taskPatches;
   const [runs, setRuns] = useState<SwimlaneRun[]>([]);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [cycleProgress, setCycleProgress] = useState<CycleProgress | null>(null);
@@ -170,8 +209,11 @@ export default function TimelineView({ projectId, onSelectTask }: TimelineViewPr
 
   const timeRange = useMemo(() => {
     if (runs.length === 0) return { min: Date.now() - 3600000, max: Date.now(), range: 3600000 };
-    const min = Math.min(...runs.map(r => r.started_at));
-    const max = Math.max(...runs.map(r => r.ended_at || Date.now()));
+    const now = Date.now();
+    const starts = runs.map(r => toMs(r.started_at)).filter(Number.isFinite);
+    const ends = runs.map(r => effectiveEnd(r, now).endMs).filter(Number.isFinite);
+    const min = starts.length ? Math.min(...starts) : now - 3600000;
+    const max = ends.length ? Math.max(...ends) : now;
     const range = max - min || 1;
     return { min, max, range };
   }, [runs]);
@@ -237,9 +279,9 @@ export default function TimelineView({ projectId, onSelectTask }: TimelineViewPr
           </div>
           {cycleProgress.cycle.started_at && (
             <div className="text-[10px] text-muted mt-1">
-              {Math.round((cycleProgress.done / cycleProgress.total) * 100)}% complete
+              {(Math.floor((cycleProgress.done * 10000) / cycleProgress.total) / 100).toFixed(2)}% complete
               {' · '}started {formatDate(cycleProgress.cycle.started_at)}
-              {cycleProgress.done > 0 && ` · ~${formatDuration((Date.now() - cycleProgress.cycle.started_at) / cycleProgress.done * (cycleProgress.total - cycleProgress.done))} remaining`}
+              {cycleProgress.done > 0 && ` · ~${formatDuration((Date.now() - toMs(cycleProgress.cycle.started_at)) / cycleProgress.done * (cycleProgress.total - cycleProgress.done))} remaining`}
             </div>
           )}
         </div>
@@ -251,54 +293,78 @@ export default function TimelineView({ projectId, onSelectTask }: TimelineViewPr
           {runs.length === 0 ? (
             <div className="text-center py-12 text-muted text-sm">No runs yet. Agent executions will appear here.</div>
           ) : (
-            <div ref={containerRef} className="space-y-1">
-              {/* Time axis header */}
-              <div className="flex items-center mb-2">
-                <div className="w-28 shrink-0" />
-                <div className="flex-1 flex justify-between text-[10px] text-muted px-1">
-                  <span>{formatDate(timeRange.min)} {formatTime(timeRange.min)}</span>
-                  <span>{formatDate(timeRange.max)} {formatTime(timeRange.max)}</span>
+            <div ref={containerRef} className="space-y-3">
+              <div className="overflow-x-auto">
+                <div className="min-w-fit">
+                  {/* Agent label header row */}
+                <div className="flex gap-2 mb-2">
+                  <div className="w-24 shrink-0" />
+                  {agents.map(([agent, agentRuns]) => (
+                    <div key={agent} className="w-24 shrink-0 text-center">
+                      <span className="text-xs font-medium text-foreground truncate block">@{agent}</span>
+                      <span className="text-[10px] text-muted">{agentRuns.length} runs</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
 
-              {/* Agent swimlanes */}
-              {agents.map(([agent, agentRuns]) => (
-                <div key={agent} className="flex items-center gap-2">
-                  {/* Agent label */}
-                  <div className="w-28 shrink-0 text-right pr-2">
-                    <span className="text-xs font-medium text-foreground truncate block">@{agent}</span>
-                    <span className="text-[10px] text-muted">{agentRuns.length} runs</span>
-                  </div>
-
-                  {/* Swimlane track */}
-                  <div className="flex-1 relative h-8 bg-surface-high/50 rounded">
-                    {agentRuns.map(run => {
-                      const left = ((run.started_at - timeRange.min) / timeRange.range) * 100;
-                      const end = run.ended_at || Date.now();
-                      const width = Math.max(((end - run.started_at) / timeRange.range) * 100, 0.5);
-                      const result = run.result || 'running';
-                      const colorClass = RESULT_COLORS[result] || 'bg-muted/50';
-                      const isHovered = hoveredRunId === run.id;
-                      const duration = (end - run.started_at);
-                      const isLongest = duration === Math.max(...agentRuns.map(r => (r.ended_at || Date.now()) - r.started_at));
-
+                {/* Time axis + agent vertical tracks */}
+                <div className="flex gap-2" style={{ height: '600px' }}>
+                  {/* Time axis (vertical) */}
+                  <div className="w-24 shrink-0 relative">
+                    {[0, 0.25, 0.5, 0.75, 1].map(p => {
+                      const ts = timeRange.min + p * timeRange.range;
                       return (
-                        <button
-                          key={run.id}
-                          onClick={() => onSelectTask(run.task_id)}
-                          onMouseEnter={() => setHoveredRunId(run.id)}
-                          onMouseLeave={() => setHoveredRunId(null)}
-                          className={`absolute top-1 bottom-1 rounded cursor-pointer transition-all ${colorClass} ${
-                            isHovered ? 'ring-2 ring-primary z-10' : ''
-                          } ${isLongest && !isHovered ? 'ring-1 ring-foreground/20' : ''}`}
-                          style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
-                          title={`${run.taskTitle}\n@${run.agent} · ${formatDuration(end - run.started_at)} · ${result}`}
-                        />
+                        <div
+                          key={p}
+                          className="absolute right-2 text-[10px] text-muted whitespace-nowrap"
+                          style={{ top: `${p * 100}%`, transform: p === 1 ? 'translateY(-100%)' : p === 0 ? 'translateY(0)' : 'translateY(-50%)' }}
+                        >
+                          {formatDate(ts)} {formatTime(ts)}
+                        </div>
                       );
                     })}
                   </div>
+
+                  {/* Agent vertical tracks */}
+                  {agents.map(([agent, agentRuns]) => {
+                    const now = Date.now();
+                    // Pre-compute per-run derived values once (avoid O(N²) Math.max inside .map).
+                    const decorated = agentRuns.map(run => {
+                      const startedMs = toMs(run.started_at);
+                      const eff = effectiveEnd(run, now);
+                      return { run, startedMs, endMs: eff.endMs, result: eff.result, duration: eff.endMs - startedMs };
+                    });
+                    let longest = 0;
+                    for (const d of decorated) if (d.duration > longest) longest = d.duration;
+                    return (
+                      <div key={agent} className="w-24 shrink-0 relative bg-surface-high/50 rounded">
+                        {decorated.map(({ run, startedMs, endMs, result, duration }) => {
+                          const top = ((startedMs - timeRange.min) / timeRange.range) * 100;
+                          const height = Math.max(((endMs - startedMs) / timeRange.range) * 100, 0.5);
+                          const colorClass = RESULT_COLORS[result] || 'bg-muted/50';
+                          const isHovered = hoveredRunId === run.id;
+                          const isLongest = duration === longest;
+
+                          return (
+                            <button
+                              key={run.id}
+                              onClick={() => onSelectTask(run.task_id)}
+                              onMouseEnter={() => setHoveredRunId(run.id)}
+                              onMouseLeave={() => setHoveredRunId(null)}
+                              className={`absolute left-1 right-1 rounded cursor-pointer transition-all ${colorClass} ${
+                                isHovered ? 'ring-2 ring-primary z-10' : ''
+                              } ${isLongest && !isHovered ? 'ring-1 ring-foreground/20' : ''}`}
+                              style={{ top: `${top}%`, height: `${Math.min(height, 100 - top)}%` }}
+                              title={`${run.taskTitle}\n@${run.agent} · ${formatDuration(duration)} · ${result}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+                </div>
+              </div>
 
               {/* Dependency / Blocked tasks */}
               {cycleProgress && (() => {
@@ -347,7 +413,7 @@ export default function TimelineView({ projectId, onSelectTask }: TimelineViewPr
               {hoveredRunId && (() => {
                 const run = runs.find(r => r.id === hoveredRunId);
                 if (!run) return null;
-                const duration = (run.ended_at || Date.now()) - run.started_at;
+                const duration = effectiveEnd(run, Date.now()).endMs - toMs(run.started_at);
                 return (
                   <div className="mt-2 p-3 bg-surface border border-border rounded-lg text-sm">
                     <div className="flex items-center gap-2">
