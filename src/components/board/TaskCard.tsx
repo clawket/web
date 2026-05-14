@@ -3,6 +3,33 @@ import { Badge } from '../ui';
 import { useDraggable } from '@dnd-kit/core';
 import { PRIORITY_DOT, PRIORITY_LABEL, STATUS_TRANSITIONS } from './constants';
 
+/** US-CLAWKET-TIER-010 — tier badge palette. Tier is the declared model
+ *  capability bucket (low/med/high). When the daemon also ships `tier_used`
+ *  and it differs from the declared tier, we render an arrow ("low→high")
+ *  to surface the escalation. */
+const TIER_CLASS: Record<NonNullable<Task['tier']>, string> = {
+  low:  'bg-muted/15 text-muted',
+  med:  'bg-primary/15 text-primary',
+  high: 'bg-warning/15 text-warning',
+};
+
+export function TierBadge({ task }: { task: Task }) {
+  const declared = task.tier ?? null;
+  const used = task.tier_used ?? null;
+  if (!declared && !used) return null;
+  const tier = declared ?? used!;
+  const cls = TIER_CLASS[tier] ?? 'bg-surface-high text-muted';
+  const escalated = declared && used && declared !== used;
+  return (
+    <span
+      className={`text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0 ${cls}`}
+      title={escalated ? `tier ${declared} → executed ${used}` : `tier ${tier}`}
+    >
+      {escalated ? `${declared}→${used}` : tier}
+    </span>
+  );
+}
+
 interface TaskCardProps {
   task: Task;
   onClick: () => void;
@@ -19,11 +46,14 @@ export function TaskCard({ task, onClick, onStatusChange }: TaskCardProps) {
         onClick={onClick}
         className="w-full text-left p-3 space-y-2 focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-t-md"
       >
-        {task.ticket_number && (
-          <span className="font-mono text-xs text-muted">
-            {task.ticket_number}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {task.ticket_number && (
+            <span className="font-mono text-xs text-muted">
+              {task.ticket_number}
+            </span>
+          )}
+          <TierBadge task={task} />
+        </div>
         <p className="text-sm font-medium text-foreground leading-snug">
           {task.title}
         </p>
