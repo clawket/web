@@ -14,6 +14,7 @@ import { CLOSED_STATUSES } from '../types';
 import api from '../api';
 import { Button, Select } from './ui';
 import StatusBadge from './StatusBadge';
+import { TierBadge } from './board/TaskCard';
 
 interface BacklogViewProps {
   projectId: string;
@@ -397,6 +398,7 @@ function DraggableTaskRow({
           <span className="font-mono text-xs text-muted shrink-0 w-16">{task.ticket_number}</span>
         )}
         <span className="text-sm text-foreground truncate flex-1">{task.title}</span>
+        <TierBadge task={task} />
         <StatusBadge status={task.status} size="sm" />
         {task.assignee && (
           <span className="text-xs text-muted shrink-0">{task.assignee}</span>
