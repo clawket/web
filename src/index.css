@@ -117,3 +117,11 @@ code, pre, .font-mono {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-foreground-muted); }
+
+/* hljs-* token classes — minimal highlight.js-compatible palette so a future
+ * swap to the full package is a drop-in. Used by WikiView's ContentRenderer
+ * for content_format='code'/'json'/'yaml'. (US-CLAWKET-WEB-WIKI-005) */
+.hljs-keyword  { color: var(--color-primary); font-weight: 600; }
+.hljs-string   { color: var(--color-success); }
+.hljs-number   { color: var(--color-warning); }
+.hljs-comment  { color: var(--color-foreground-muted); font-style: italic; }
