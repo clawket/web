@@ -38,9 +38,11 @@ export default function PlanDetail({ planId, onClose }: PlanDetailProps) {
 
   useEffect(() => { load(); }, [load]);
 
-  function formatTime(ts: number | null) {
-    if (!ts) return '\u2014';
-    return new Date(ts).toLocaleString();
+  function formatTime(ts: number | string | null | undefined) {
+    if (ts == null || ts === '') return '\u2014';
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime())) return '\u2014';
+    return d.toLocaleString();
   }
 
   if (loading || !plan) {

@@ -10,7 +10,14 @@ import type {
   TaskComment,
   ArtifactVersion,
   TimelineEvent,
+  EnvelopeJson,
+  EnvelopeResponse,
+  EnvelopeValidateResult,
+  TaskTreeNode,
+  DecompositionResult,
+  EnvelopeHistoryEntry,
 } from './types';
+import { authHeaders } from './lib/auth';
 
 const BASE = '';
 
@@ -40,8 +47,16 @@ function qs(params?: Record<string, string | number | undefined>): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
+    // LM-10833: send the HttpOnly `clawket_session` cookie the daemon issues
+    // on the SPA index response. The cookie carries the same token the CLI
+    // reads from `~/.cache/clawket/clawketd.token`, and it's the bootstrap
+    // channel for browsers (which can't read the token file). `authHeaders()`
+    // is kept as a fallback for the vite dev server (cross-port: 5174 → daemon
+    // port) where the cookie may not flow without a proxy passthrough.
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders(),
       ...init?.headers,
     },
   });
@@ -163,6 +178,29 @@ export function approvePlan(id: string): Promise<Plan> {
   return post(`/plans/${encodeURIComponent(id)}/approve`);
 }
 
+/** FIX-WEB-005 — LM-counts: aggregate task counts by unit for a plan.
+ *  Backend endpoint: GET /plans/:id/counts
+ *  Shape: Record<unit_id, { todo: number; in_progress: number; blocked: number; done: number; cancelled: number; total: number }>
+ *  Note: if the daemon endpoint doesn't exist yet (FIX-DAEMON-016 in flight),
+ *  callers should catch 404 and fall back to per-unit listTasks. */
+export interface UnitTaskCounts {
+  todo: number;
+  in_progress: number;
+  blocked: number;
+  done: number;
+  cancelled: number;
+  total: number;
+}
+
+export async function getPlanCounts(planId: string): Promise<Record<string, UnitTaskCounts> | null> {
+  try {
+    return await get<Record<string, UnitTaskCounts>>(`/plans/${encodeURIComponent(planId)}/counts`);
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 405)) return null;
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cycles (Sprint — time-boxed iteration, cross-cutting)
 // ---------------------------------------------------------------------------
@@ -254,6 +292,8 @@ export function listTasks(params?: {
   unit_id?: string;
   plan_id?: string;
   status?: string;
+  /** US-CKT-SCHEMA-023/025: filter tasks by batch_id (for sub-agent batch grouping) */
+  batch_id?: string;
 }): Promise<Task[]> {
   return get(`/tasks${qs(params)}`);
 }
@@ -312,6 +352,153 @@ export function removeTaskLabel(id: string, label: string): Promise<Task> {
   return del(`/tasks/${encodeURIComponent(id)}/labels/${encodeURIComponent(label)}`);
 }
 
+/** Fetch the active envelope. Resolves 404 (no envelope yet) to null
+ *  so callers can render an empty form instead of treating a missing
+ *  envelope as an error. */
+export async function getTaskEnvelope(
+  id: string,
+  opts?: { resolve?: boolean; version?: number },
+): Promise<EnvelopeResponse | null> {
+  try {
+    return await get<EnvelopeResponse>(
+      `/tasks/${encodeURIComponent(id)}/envelope${qs({
+        resolve: opts?.resolve ? '1' : undefined,
+        version: opts?.version,
+      })}`,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/** Sign a new envelope version on the task. Returns the updated task
+ *  envelope wrapper; the active envelope is the one written here. */
+export function updateTaskEnvelope(
+  id: string,
+  envelope: EnvelopeJson,
+): Promise<{ task: Task; active_envelope: unknown }> {
+  return patch(`/tasks/${encodeURIComponent(id)}`, { envelope });
+}
+
+export function clearTaskEnvelope(id: string): Promise<{ task_id: string; cleared: boolean }> {
+  return del(`/tasks/${encodeURIComponent(id)}/envelope`);
+}
+
+/** Envelope version history for a task, newest-first. The active
+ *  envelope is the only entry without `superseded_at`. Used by the
+ *  Timeline Replay view (LM-89) as one of the two event streams. */
+export function getEnvelopeHistory(
+  id: string,
+  opts?: { limit?: number; offset?: number },
+): Promise<EnvelopeHistoryEntry[]> {
+  return get<EnvelopeHistoryEntry[]>(
+    `/tasks/${encodeURIComponent(id)}/envelope/history${qs({
+      limit: opts?.limit,
+      offset: opts?.offset,
+    })}`,
+  );
+}
+
+/** Ask the daemon to suggest subtasks for `id`, derived from the
+ *  resolved envelope's `success_criteria`. Returns the same shape the
+ *  CLI MCP `clawket_decompose_task` tool exposes — daemon is the
+ *  single source of truth (LM-87). */
+export function decomposeTask(
+  id: string,
+  args: { strategy?: 'auto' | 'scoped' | 'by-repo'; max_depth?: number } = {},
+): Promise<DecompositionResult> {
+  return post<DecompositionResult>(
+    `/tasks/${encodeURIComponent(id)}/decompose`,
+    args,
+  );
+}
+
+/** Create a child task under `parentId`. Inherits envelope from the
+ *  parent unless overrides are supplied. Used by the SuggestionPanel
+ *  to materialize accepted suggestions. */
+export function createSubtask(
+  parentId: string,
+  body: {
+    title: string;
+    body?: string;
+    idx?: number;
+    priority?: Task['priority'];
+    type?: Task['type'];
+    envelope_overrides?: EnvelopeJson;
+  },
+): Promise<{ task: Task } | Task> {
+  return post(`/tasks/${encodeURIComponent(parentId)}/subtasks`, body);
+}
+
+/** Subtree rooted at `id` in pre-order (DFS by default, BFS via
+ *  `order: 'bfs'`). The first element is always the root. The daemon
+ *  caps the result at 1024 nodes. `include_envelope` defaults to true
+ *  on the daemon — pass `include_envelope: false` to skip the per-node
+ *  envelope resolve cost when the caller only needs structure. */
+export function getTaskSubtree(
+  id: string,
+  opts?: { depth?: number; order?: 'dfs' | 'bfs'; include_envelope?: boolean },
+): Promise<TaskTreeNode[]> {
+  return get<TaskTreeNode[]>(
+    `/tasks/${encodeURIComponent(id)}/subtree${qs({
+      depth: opts?.depth,
+      order: opts?.order,
+      include_envelope: opts?.include_envelope === undefined ? undefined : String(opts.include_envelope),
+    })}`,
+  );
+}
+
+/** Parent chain rooted at the closest ancestor and ending with the
+ *  immediate parent. `depth=1` yields just the parent; the daemon
+ *  caps at TREE_NODE_CAP. The current task is **not** included —
+ *  callers prepend it themselves for breadcrumb rendering. */
+export function getTaskAncestors(
+  id: string,
+  opts?: { depth?: number; include_envelope?: boolean },
+): Promise<TaskTreeNode[]> {
+  return get<TaskTreeNode[]>(
+    `/tasks/${encodeURIComponent(id)}/ancestors${qs({
+      depth: opts?.depth,
+      include_envelope: opts?.include_envelope === undefined ? undefined : String(opts.include_envelope),
+    })}`,
+  );
+}
+
+/** Descendant tree of `id` (excluding self). `depth=1` returns only
+ *  the immediate children, which is what the children panel uses. */
+export function getTaskDescendants(
+  id: string,
+  opts?: { depth?: number; order?: 'dfs' | 'bfs'; include_envelope?: boolean },
+): Promise<TaskTreeNode[]> {
+  return get<TaskTreeNode[]>(
+    `/tasks/${encodeURIComponent(id)}/descendants${qs({
+      depth: opts?.depth,
+      order: opts?.order,
+      include_envelope: opts?.include_envelope === undefined ? undefined : String(opts.include_envelope),
+    })}`,
+  );
+}
+
+/** Validate a *draft* envelope (un-saved) against the daemon's
+ *  structural rules. Returns 404 if `envelope` is omitted and the task
+ *  has no active envelope yet — in that case the caller should treat
+ *  it as "no validation surface yet" rather than an error. */
+export async function validateTaskEnvelope(
+  id: string,
+  args: { envelope?: EnvelopeJson; strict?: boolean; resolve?: boolean } = {},
+): Promise<EnvelopeValidateResult | null> {
+  try {
+    return await post<EnvelopeValidateResult>(
+      `/tasks/${encodeURIComponent(id)}/envelope/validate`,
+      args,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wiki Files (project cwd file scanner)
 // ---------------------------------------------------------------------------
@@ -336,8 +523,13 @@ export function getWikiFile(cwd: string, path: string, projectId?: string): Prom
 }
 
 // ---------------------------------------------------------------------------
-// Artifacts
+// Knowledge
 // ---------------------------------------------------------------------------
+//
+// HTTP path: /artifacts. Daemons post-migration-024 also expose /knowledge as
+// the canonical name, but /artifacts remains a permanent backwards-compat
+// alias (router-level alias + SQL view), so the web stays on the older spelling
+// to keep working against any deployed daemon binary.
 
 export function listArtifacts(params?: {
   task_id?: string;
@@ -345,11 +537,11 @@ export function listArtifacts(params?: {
   plan_id?: string;
   type?: string;
 }): Promise<Artifact[]> {
-  return get(`/artifacts${qs(params)}`);
+  return get(`/knowledge${qs(params)}`);
 }
 
 export function getArtifact(id: string): Promise<Artifact> {
-  return get(`/artifacts/${encodeURIComponent(id)}`);
+  return get(`/knowledge/${encodeURIComponent(id)}`);
 }
 
 export function createArtifact(data: {
@@ -361,20 +553,54 @@ export function createArtifact(data: {
   content: string;
   content_format: string;
   parent_id?: string;
-  scope?: string;
 }): Promise<Artifact> {
-  return post('/artifacts', data);
+  return post('/knowledge', data);
 }
 
 export function updateArtifact(
   id: string,
   data: { title?: string; content?: string; content_format?: string; created_by?: string },
 ): Promise<Artifact> {
-  return patch(`/artifacts/${encodeURIComponent(id)}`, data);
+  return patch(`/knowledge/${encodeURIComponent(id)}`, data);
 }
 
 export function deleteArtifact(id: string): Promise<void> {
-  return del(`/artifacts/${encodeURIComponent(id)}`);
+  return del(`/knowledge/${encodeURIComponent(id)}`);
+}
+
+/** Server-side BM25 + vector hybrid search.
+ *  Default mode: `hybrid` (BM25 + sqlite-vec embedding). When sqlite-vec is
+ *  unavailable the daemon falls back to keyword-only and only `bm25_score`
+ *  is populated.
+ *
+ *  Returns null on 404/501 — daemons predating FIX-DAEMON-010 don't expose
+ *  this route, callers should fall back to client-side filter. */
+export interface ArtifactHit extends Artifact {
+  bm25_score?: number;
+  vector_score?: number;
+  hybrid_score?: number;
+  truncated?: boolean;
+}
+
+export interface ArtifactSearchResponse {
+  hits: ArtifactHit[];
+  total_returned: number;
+  limit: number;
+  truncated: boolean;
+}
+
+export async function searchArtifacts(params: {
+  q: string;
+  limit?: number;
+  mode?: 'hybrid' | 'semantic' | 'keyword';
+  project_id?: string;
+}): Promise<ArtifactSearchResponse | null> {
+  try {
+    return await get<ArtifactSearchResponse>(`/knowledge/search${qs(params)}`);
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 501)) return null;
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,11 +703,11 @@ export function deleteTaskComment(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Artifact Versions
+// Knowledge Versions
 // ---------------------------------------------------------------------------
 
 export function fetchArtifactVersions(artifactId: string): Promise<ArtifactVersion[]> {
-  return get(`/artifacts/${encodeURIComponent(artifactId)}/versions`);
+  return get(`/knowledge/${encodeURIComponent(artifactId)}/versions`);
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +750,7 @@ const api = {
   createArtifact,
   updateArtifact,
   deleteArtifact,
+  searchArtifacts,
   listRuns,
   getRun,
   startRun,
@@ -546,6 +773,17 @@ const api = {
   listBacklog,
   listWikiFiles,
   getWikiFile,
+  getTaskEnvelope,
+  updateTaskEnvelope,
+  clearTaskEnvelope,
+  validateTaskEnvelope,
+  getTaskSubtree,
+  getTaskAncestors,
+  getTaskDescendants,
+  getEnvelopeHistory,
+  decomposeTask,
+  createSubtask,
+  getPlanCounts,
 } as const;
 
 export default api;
