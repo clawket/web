@@ -2,9 +2,10 @@ import type { Artifact, Run, Question } from '../../types';
 import StatusBadge from '../StatusBadge';
 import { Label } from '../ui';
 
-function formatTime(ts: number | null): string {
-  if (!ts) return '—';
+function formatTime(ts: number | string | null | undefined): string {
+  if (ts == null || ts === '') return '—';
   const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return '—';
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 

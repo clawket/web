@@ -7,6 +7,107 @@ import { Label, Input, Select, Button } from './ui';
 import { TaskComments } from './task-detail/TaskComments';
 import { TaskSubTasks } from './task-detail/TaskSubTasks';
 import { ArtifactsSection, RunsSection, QuestionsSection } from './task-detail/TaskSections';
+import EnvelopeForm from './EnvelopeForm';
+import TaskTreeView from './TaskTreeView';
+import TaskBreadcrumb from './TaskBreadcrumb';
+import SuggestionPanel from '../features/decomposition/SuggestionPanel';
+import TimelineReplay from '../features/timeline/TimelineReplay';
+import RunCompare from '../features/runs/RunCompare';
+
+/** US-CKT-SCHEMA-014 — file:line evidence source-link pattern.
+ *  Matches strings like `src/foo/bar.ts:42` or `daemon/routes.rs:100`.
+ *  The scheme is intentionally kept simple: no spaces, only word chars,
+ *  dots, slashes, hyphens, followed by a colon and a decimal line number. */
+const FILE_LINE_RE = /^[\w./-]+:\d+$/;
+
+/** Renders an evidence string. When it matches the file:line pattern it is
+ *  wrapped in an `<a>` tag styled as a source reference; otherwise it renders
+ *  as plain monospace text. NULL / undefined renders an em-dash. */
+function EvidenceValue({ value }: { value: string | null | undefined }) {
+  if (value == null) return <span className="text-muted">—</span>;
+  if (FILE_LINE_RE.test(value)) {
+    return (
+      <a
+        href={`#evidence:${value}`}
+        className="text-primary font-mono hover:underline"
+        title={`source: ${value}`}
+      >
+        {value}
+      </a>
+    );
+  }
+  return <span className="text-foreground font-mono break-all">{value}</span>;
+}
+
+/** US-CKT-SCHEMA-025 — link from a task's batch_id to other tasks sharing it.
+ *  Renders the batch_id as a clickable link plus an inline count badge of
+ *  sibling tasks. Clicking opens an inline list which when expanded lets
+ *  the user jump to any sibling task via onSelectTask. */
+function BatchSiblingsLink({
+  batchId,
+  currentTaskId,
+  onSelectTask,
+}: {
+  batchId: string;
+  currentTaskId: string;
+  onSelectTask?: (id: string) => void;
+}) {
+  const [siblings, setSiblings] = useState<Task[] | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listTasks({ batch_id: batchId })
+      .then((rows) => {
+        if (!cancelled) setSiblings(rows);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String((e as Error).message ?? e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [batchId]);
+  const others = (siblings ?? []).filter((t) => t.id !== currentTaskId);
+  return (
+    <span className="flex items-baseline gap-2 flex-wrap">
+      <span className="text-foreground font-mono">{batchId}</span>
+      {error ? (
+        <span className="text-danger text-[10px]">batch lookup failed</span>
+      ) : siblings == null ? (
+        <span className="text-muted text-[10px]">…</span>
+      ) : others.length === 0 ? (
+        <span className="text-muted text-[10px]">no siblings</span>
+      ) : (
+        <button
+          type="button"
+          className="text-primary text-[11px] hover:underline"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          {expanded ? 'hide' : 'show'} {others.length} task{others.length === 1 ? '' : 's'} in batch
+        </button>
+      )}
+      {expanded && others.length > 0 && (
+        <ul className="basis-full mt-1 ml-26 text-[11px] flex flex-col gap-0.5">
+          {others.map((t) => (
+            <li key={t.id} className="font-mono">
+              <button
+                type="button"
+                className="text-primary hover:underline text-left"
+                onClick={() => onSelectTask?.(t.id)}
+                title={t.title}
+              >
+                {t.id.slice(-10)} — {t.title}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
+  );
+}
 
 const PRIORITY_COLORS: Record<Task['priority'], string> = {
   critical: 'bg-danger/20 text-danger',
@@ -19,11 +120,14 @@ interface TaskDetailProps {
   taskId: string;
   projectId?: string;
   onClose: () => void;
+  /** Open a different task in the side panel — wired by App for the
+   *  TaskTreeView's click-to-navigate behavior. */
+  onSelectTask?: (id: string) => void;
 }
 
 const STATUS_OPTIONS: Task['status'][] = ['todo', 'in_progress', 'blocked', 'done', 'cancelled'];
 
-export default function TaskDetail({ taskId, projectId, onClose }: TaskDetailProps) {
+export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }: TaskDetailProps) {
   const [task, setTask] = useState<Task | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -120,9 +224,11 @@ export default function TaskDetail({ taskId, projectId, onClose }: TaskDetailPro
     }
   }
 
-  function formatTime(ts: number | null) {
-    if (!ts) return '\u2014';
-    return new Date(ts).toLocaleString();
+  function formatTime(ts: number | string | null | undefined) {
+    if (ts == null || ts === '') return '\u2014';
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime())) return '\u2014';
+    return d.toLocaleString();
   }
 
   if (loading || !task) {
@@ -145,6 +251,9 @@ export default function TaskDetail({ taskId, projectId, onClose }: TaskDetailPro
       </div>
 
       <div className="p-4 space-y-5">
+        {/* LM-88 — breadcrumb + children navigation */}
+        <TaskBreadcrumb task={task} onSelectTask={onSelectTask} />
+
         {/* Title */}
         <div>
           {editingTitle ? (
@@ -264,6 +373,32 @@ export default function TaskDetail({ taskId, projectId, onClose }: TaskDetailPro
           <div><span className="text-muted">Completed:</span> <span className="text-foreground">{formatTime(task.completed_at)}</span></div>
         </div>
 
+        {/* PDD v3.0 metadata — scenario_id / evidence / batch_id (always rendered, em-dash for null) */}
+        <div className="grid grid-cols-1 gap-1.5 text-xs border border-border/50 rounded px-3 py-2 bg-background/50">
+          <div className="flex items-baseline gap-2">
+            <span className="text-muted shrink-0 w-24">Scenario ID:</span>
+            <span className="text-foreground font-mono">
+              {task.scenario_id ?? '—'}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-muted shrink-0 w-24">Evidence:</span>
+            <EvidenceValue value={task.evidence} />
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-muted shrink-0 w-24">Batch ID:</span>
+            {task.batch_id ? (
+              <BatchSiblingsLink
+                batchId={task.batch_id}
+                currentTaskId={task.id}
+                onSelectTask={onSelectTask}
+              />
+            ) : (
+              <span className="text-muted">—</span>
+            )}
+          </div>
+        </div>
+
         {/* Dependencies */}
         {(task.depends_on || []).length > 0 && (
           <div>
@@ -287,6 +422,43 @@ export default function TaskDetail({ taskId, projectId, onClose }: TaskDetailPro
             ) : (
               <span className="text-muted italic">No content</span>
             )}
+          </div>
+        </div>
+
+        <div>
+          <Label>Envelope</Label>
+          <div className="bg-background border border-border rounded p-3">
+            <EnvelopeForm taskId={task.id} />
+          </div>
+        </div>
+
+        {childTasks.length > 0 && (
+          <div>
+            <Label>Decomposition tree</Label>
+            <div className="bg-background border border-border rounded p-2">
+              <TaskTreeView taskId={task.id} selectedTaskId={task.id} onSelectTask={onSelectTask} />
+            </div>
+          </div>
+        )}
+
+        <div>
+          <Label>Decomposition suggestions</Label>
+          <div className="bg-background border border-border rounded p-2">
+            <SuggestionPanel taskId={task.id} onAccepted={load} />
+          </div>
+        </div>
+
+        <div>
+          <Label>Timeline replay</Label>
+          <div className="bg-background border border-border rounded p-2">
+            <TimelineReplay taskId={task.id} />
+          </div>
+        </div>
+
+        <div>
+          <Label>Run diff</Label>
+          <div className="bg-background border border-border rounded p-2">
+            <RunCompare taskId={task.id} />
           </div>
         </div>
 
