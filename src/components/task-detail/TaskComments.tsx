@@ -3,9 +3,10 @@ import type { TaskComment } from '../../types';
 import api from '../../api';
 import { Label, Input, Textarea, Button } from '../ui';
 
-function formatTime(ts: number | null): string {
-  if (!ts) return '\u2014';
+function formatTime(ts: number | string | null | undefined): string {
+  if (ts == null || ts === '') return '\u2014';
   const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return '\u2014';
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
