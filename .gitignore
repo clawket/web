@@ -1,7 +1,18 @@
+.DS_Store
 node_modules/
 dist/
-.DS_Store
+coverage/
 *.log
-.env
-.env.local
 .vite/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
