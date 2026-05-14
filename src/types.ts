@@ -69,6 +69,23 @@ export interface Task {
   labels: string[];
   reporter: string | null;
   type: 'task' | 'bug' | 'feature' | 'enhancement' | 'refactor' | 'docs' | 'test' | 'chore';
+  /** US-CLAWKET-TIER-010 — declared model tier (FIX-DAEMON-001). The daemon
+   *  ships `low | med | high` (or null for legacy rows). UI renders a small
+   *  badge in TaskCard / BacklogView / BoardView. */
+  tier?: 'low' | 'med' | 'high' | null;
+  /** TIER-041 — actually-executed tier (may differ from `tier` after escalation). */
+  tier_used?: 'low' | 'med' | 'high' | null;
+  /** US-CKT-SCHEMA-008/009 — PDD v3.0 scenario traceability. Maps this task
+   *  to the atomic scenario it implements (e.g. `US-CKT-SCHEMA-008`). NULL
+   *  for legacy rows that predate schema v3.0. */
+  scenario_id?: string | null;
+  /** US-CKT-SCHEMA-013/014 — execution evidence. Free-form string; when it
+   *  matches `^[\w./-]+:\d+$` (file:line) the UI renders it as a source
+   *  reference link. NULL for legacy rows. */
+  evidence?: string | null;
+  /** US-CKT-SCHEMA-024 — sub-agent batch identifier. Groups tasks produced
+   *  by the same sub-agent invocation for attention-drift audits. */
+  batch_id?: string | null;
 }
 
 export interface TaskComment {
@@ -98,8 +115,13 @@ export interface Artifact {
   title: string;
   content: string;
   content_format: string;
-  scope: 'rag' | 'reference' | 'archive';
   created_at: number;
+  /** FIX-DAEMON-008 — wiki ordering hint (sibling order within parent). */
+  wiki_idx?: number;
+  /** FIX-DAEMON-008 — depth in the wiki tree (root = 0). Used by WikiView
+   *  for left-padding when the parent_id chain is unreliable (e.g. orphans
+   *  whose parent isn't in scope). US-CLAWKET-WEB-WIKI-005. */
+  wiki_depth?: number;
 }
 
 export interface Run {
@@ -114,7 +136,7 @@ export interface Run {
 }
 
 export type TimelineEventType =
-  | 'status_change' | 'comment' | 'artifact' | 'run_start' | 'run_end'
+  | 'status_change' | 'comment' | 'knowledge' | 'run_start' | 'run_end'
   | 'question' | 'created' | 'updated' | 'assignment';
 
 export interface TimelineEvent {
@@ -157,4 +179,114 @@ export interface Question {
   answer: string | null;
   answered_by: string | null;
   answered_at: number | null;
+}
+
+/** ADR-0001 envelope: 19 canonical fields, in render order. Mirrors
+ *  `cli::commands::plan::export::ENVELOPE_FIELDS`. The form renders
+ *  these and *only* these — extra keys round-trip through JSON but
+ *  are not surfaced as inputs. */
+export const ENVELOPE_FIELDS = [
+  'version',
+  'intent',
+  'target_repo',
+  'target_model',
+  'max_turns',
+  'prompt_template',
+  'context_refs',
+  'scope_boundary',
+  'atomic_size_hint',
+  'success_criteria',
+  'verification_cmd',
+  'depends_on',
+  'blocked_by',
+  'planned_sha',
+  'decomposition_policy',
+  'checkpoint_interval',
+  'rollback_strategy',
+  'origin',
+  'assigned_model',
+] as const;
+
+export type EnvelopeField = (typeof ENVELOPE_FIELDS)[number];
+
+export const ATOMIC_SIZE_HINTS = ['tiny', 'small', 'medium', 'large'] as const;
+export type AtomicSizeHint = (typeof ATOMIC_SIZE_HINTS)[number];
+
+export const DECOMPOSITION_POLICIES = ['auto', 'manual', 'atomic'] as const;
+export type DecompositionPolicy = (typeof DECOMPOSITION_POLICIES)[number];
+
+/** Untyped JSON for envelope values — daemon stores arbitrary shapes
+ *  per field (string / number / array / object). The form coerces
+ *  per-field on submit. */
+export type EnvelopeJson = Record<string, unknown>;
+
+export interface EnvelopeResponse {
+  raw_envelope: EnvelopeJson;
+  resolved_envelope: EnvelopeJson;
+  inheritance_chain: string[];
+  version: number;
+  superseded: boolean;
+}
+
+export type EnvelopeViolationSeverity = 'error' | 'warning';
+
+export interface EnvelopeViolation {
+  field: string;
+  severity: EnvelopeViolationSeverity;
+  message: string;
+}
+
+export interface EnvelopeValidateResult {
+  valid: boolean;
+  strict: boolean;
+  violations: EnvelopeViolation[];
+  evaluated_envelope: EnvelopeJson;
+}
+
+/** Daemon tree node — the wire shape from `/tasks/:id/{ancestors,
+ *  descendants,subtree}`. The Task fields are flattened at the top
+ *  level, then `depth` (root = 0) and an optional pre-resolved
+ *  envelope are appended. Mirrors `daemon::routes::tasks::TreeNode`. */
+export type TaskTreeNode = Task & {
+  depth: number;
+  resolved_envelope?: EnvelopeJson;
+};
+
+/** LM-87 — daemon decomposition response from POST /tasks/:id/decompose.
+ *  Mirrors `daemon::decomposition::suggest::DecompositionResult`'s
+ *  JSON shape. */
+export interface DecompositionSuggestion {
+  idx: number;
+  title: string;
+  rationale: string;
+  scope_hint: string;
+  inherited_envelope_keys: string[];
+}
+
+export interface DecompositionPolicyViolation {
+  field: string;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+/** LM-89 / RL-U6-06 — daemon envelope history entry from
+ *  `GET /tasks/:id/envelope/history`. The latest version (`superseded_at`
+ *  null) is the currently-active envelope; older versions form the
+ *  replay timeline along with `Run` events. */
+export interface EnvelopeHistoryEntry {
+  id: string;
+  version: number;
+  created_at: number;
+  signed_by: string;
+  superseded_at?: number;
+  envelope: EnvelopeJson;
+}
+
+export interface DecompositionResult {
+  parent: { id: string; ticket_number: string | null; title: string };
+  strategy: string;
+  max_depth: number;
+  existing_children_count: number;
+  suggested_subtasks: DecompositionSuggestion[];
+  policy_violations: DecompositionPolicyViolation[];
 }
