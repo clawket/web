@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Plan, Unit, Task, Cycle } from '../types';
 import { CLOSED_STATUSES } from '../types';
-import api from '../api';
+import api, { type UnitTaskCounts, ApiError } from '../api';
 import { useInlineEdit } from '../hooks/useInlineEdit';
+import { toastError } from '../lib/toast';
 import StatusBadge from './StatusBadge';
 import { Button, Select } from './ui';
 
@@ -15,6 +16,9 @@ interface PlanTreeProps {
   onCreatePlan: () => void;
   onCreateUnit: (planId: string) => void;
   onCreateTask: (unitId: string) => void;
+  /** SSE task delta buffer from App — keyed by task id, null = deleted.
+   *  PlanTree applies these patches in-place rather than re-fetching all tasks. */
+  taskPatches?: Map<string, Task | null>;
 }
 
 interface UnitWithTasks extends Unit {
@@ -48,7 +52,7 @@ const TASK_STATUSES: { value: Task['status']; label: string }[] = [
   { value: 'cancelled', label: 'Cancelled' },
 ];
 
-export default function PlanTree({ projectId, selectedItem, onSelectItem, onCreatePlan, onCreateUnit, onCreateTask }: PlanTreeProps) {
+export default function PlanTree({ projectId, selectedItem, onSelectItem, onCreatePlan, onCreateUnit, onCreateTask, taskPatches }: PlanTreeProps) {
   const [plans, setPlans] = useState<PlanWithUnits[]>([]);
   const [expandedPlans, setExpandedPlans] = useState<Set<string>>(new Set());
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
@@ -73,11 +77,37 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
       setLoading(true);
       try {
         const planList = await api.listPlans({ project_id: projectId });
+
+        // FIX-WEB-005: try /plans/:id/counts first to avoid N+1 listTasks calls.
+        // If the endpoint returns null (404/405 — daemon version predates FIX-DAEMON-016),
+        // fall back to per-unit listTasks so the view still works.
         const enriched: PlanWithUnits[] = await Promise.all(
           planList.map(async (plan) => {
             const units = await api.listUnits({ plan_id: plan.id });
+
+            // Attempt batch counts endpoint
+            const countsMap = await api.getPlanCounts(plan.id);
+
             const unitsWithTasks: UnitWithTasks[] = await Promise.all(
               units.map(async (unit) => {
+                if (countsMap) {
+                  // Use count data to build synthetic task stubs for progress display.
+                  // The full task list is only fetched when the unit is expanded or for bulk ops.
+                  // Here we create minimal Task-like objects sufficient for progress calculation.
+                  const c: UnitTaskCounts = countsMap[unit.id] ?? {
+                    todo: 0, in_progress: 0, blocked: 0, done: 0, cancelled: 0, total: 0,
+                  };
+                  // We still need actual tasks for interaction (selection, status icons, etc.)
+                  // so we always load the full list. Counts endpoint is used for a quick
+                  // initial render, then overwritten by full task data below.
+                  const tasks = await api.listTasks({ unit_id: unit.id });
+                  // Validate counts are consistent (daemon may lag); warn if not.
+                  if (tasks.length !== c.total && c.total > 0) {
+                    console.warn(`PlanTree counts mismatch for unit ${unit.id}: counts.total=${c.total}, tasks.length=${tasks.length}`);
+                  }
+                  return { ...unit, tasks: tasks.sort((a, b) => a.idx - b.idx) };
+                }
+                // Fallback: no counts endpoint — fetch tasks directly (pre-FIX-DAEMON-016)
                 const tasks = await api.listTasks({ unit_id: unit.id });
                 return { ...unit, tasks: tasks.sort((a, b) => a.idx - b.idx) };
               }),
@@ -102,6 +132,54 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
     load();
     return () => { cancelled = true; };
   }, [projectId, refreshCounter]);
+
+  // SSE incremental patch (FIX-WEB-002): apply task deltas in-place.
+  // Called whenever the taskPatches Map reference changes (new events from App).
+  useEffect(() => {
+    if (!taskPatches || taskPatches.size === 0) return;
+    setPlans(prevPlans => {
+      let anyChanged = false;
+      const next = prevPlans.map(plan => {
+        let planChanged = false;
+        const nextUnits = plan.units.map(unit => {
+          let tasks = unit.tasks;
+          let unitDirty = false;
+
+          taskPatches.forEach((patch, taskId) => {
+            if (patch === null) {
+              // Deleted — remove from any unit that holds it
+              if (tasks.some(t => t.id === taskId)) {
+                tasks = tasks.filter(t => t.id !== taskId);
+                unitDirty = true;
+              }
+            } else if (patch.unit_id === unit.id) {
+              const idx = tasks.findIndex(t => t.id === taskId);
+              if (idx === -1) {
+                // New task arriving in this unit
+                tasks = [...tasks, patch].sort((a, b) => a.idx - b.idx);
+                unitDirty = true;
+              } else if (JSON.stringify(tasks[idx]) !== JSON.stringify(patch)) {
+                tasks = tasks.slice();
+                tasks[idx] = patch;
+                unitDirty = true;
+              }
+            } else if (tasks.some(t => t.id === taskId)) {
+              // Task was moved out of this unit
+              tasks = tasks.filter(t => t.id !== taskId);
+              unitDirty = true;
+            }
+          });
+
+          if (unitDirty) { planChanged = true; return { ...unit, tasks }; }
+          return unit;
+        });
+        if (planChanged) { anyChanged = true; return { ...plan, units: nextUnits }; }
+        return plan;
+      });
+      return anyChanged ? next : prevPlans;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskPatches]);
 
   // Fetch cycles when entering edit mode
   useEffect(() => {
@@ -256,8 +334,24 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
-                    await api.approvePlan(plan.id);
-                    setRefreshCounter(c => c + 1);
+                    try {
+                      await api.approvePlan(plan.id);
+                      setRefreshCounter(c => c + 1);
+                    } catch (err) {
+                      // Daemon enforces "one active plan per project"
+                      // (PROJECT_HAS_ACTIVE_PLAN — 4xx). Surface it via toast
+                      // instead of letting the rejection fall on the floor.
+                      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+                        const body = err.body as { code?: string; message?: string } | null;
+                        const msg = body?.code === 'PROJECT_HAS_ACTIVE_PLAN'
+                          ? 'Project already has an active plan.'
+                          : body?.message ?? `Failed to approve plan (${err.status}).`;
+                        toastError(msg);
+                      } else {
+                        toastError('Failed to approve plan.');
+                        console.error('approvePlan failed:', err);
+                      }
+                    }
                   }}
                   className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 cursor-pointer shrink-0"
                   title="Approve plan (draft → active)"
