@@ -11,6 +11,77 @@ interface SummaryViewProps {
 
 interface UnitWithPlan extends Unit {
   planTitle: string;
+  planStatus: Plan['status'];
+}
+
+type UnitBucket = 'now' | 'next' | 'done' | 'empty';
+
+const NEXT_DEFAULT_LIMIT = 5;
+
+function classifyUnit(
+  planStatus: Plan['status'],
+  unitTasks: Task[],
+  activeCycleIds: ReadonlySet<string>,
+): UnitBucket {
+  if (unitTasks.length === 0) return 'empty';
+  const allClosed = unitTasks.every(t => CLOSED_STATUSES.has(t.status));
+  if (allClosed) return 'done';
+  if (planStatus === 'completed') return 'done';
+  const hasActiveCycleInProgress = unitTasks.some(
+    t => t.status === 'in_progress' && t.cycle_id !== null && activeCycleIds.has(t.cycle_id),
+  );
+  if (hasActiveCycleInProgress) return 'now';
+  return 'next';
+}
+
+function PlanStatusPill({ status }: { status: Plan['status'] }) {
+  const cls =
+    status === 'active'
+      ? 'bg-warning/15 text-warning'
+      : status === 'completed'
+      ? 'bg-success/15 text-success'
+      : 'bg-surface-high text-muted';
+  return (
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
+function UnitRow({
+  unit,
+  done,
+  total,
+  dim,
+  injected,
+}: {
+  unit: UnitWithPlan;
+  done: number;
+  total: number;
+  dim?: boolean;
+  injected?: boolean;
+}) {
+  return (
+    <div className={`flex items-center gap-3 ${dim ? 'opacity-50' : ''}`}>
+      <span
+        aria-hidden="true"
+        className={`w-1 self-stretch rounded-sm ${injected ? 'bg-warning' : 'bg-transparent'}`}
+        title={injected ? 'In active cycle (injected context)' : undefined}
+      />
+      <span className="text-sm text-foreground flex-1 truncate">{unit.title}</span>
+      <span className="text-xs text-muted whitespace-nowrap">
+        {done}/{total}
+      </span>
+      <div className="w-24 h-1.5 rounded-full bg-surface-high overflow-hidden">
+        {total > 0 && (
+          <div
+            className="h-full bg-success rounded-full"
+            style={{ width: `${(done / total) * 100}%` }}
+          />
+        )}
+      </div>
+    </div>
+  );
 }
 
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
@@ -35,6 +106,154 @@ function ProgressBar({ done, inProgress, todo, blocked }: { done: number; inProg
       {pDone > 0 && <div className="bg-success h-full" style={{ width: `${pDone}%` }} />}
       {pInProgress > 0 && <div className="bg-warning h-full" style={{ width: `${pInProgress}%` }} />}
       {pBlocked > 0 && <div className="bg-danger h-full" style={{ width: `${pBlocked}%` }} />}
+    </div>
+  );
+}
+
+interface UnitsSectionProps {
+  units: UnitWithPlan[];
+  plans: Plan[];
+  tasks: Task[];
+  cycles: Cycle[];
+}
+
+function UnitsSection({ units, plans, tasks, cycles }: UnitsSectionProps) {
+  const [showAllNextByPlan, setShowAllNextByPlan] = useState<Record<string, boolean>>({});
+  const [doneOpenByPlan, setDoneOpenByPlan] = useState<Record<string, boolean>>({});
+  const [emptyOpenByPlan, setEmptyOpenByPlan] = useState<Record<string, boolean>>({});
+
+  const activeCycleIds = new Set(cycles.filter(c => c.status === 'active').map(c => c.id));
+  const tasksByUnit = new Map<string, Task[]>();
+  for (const t of tasks) {
+    const arr = tasksByUnit.get(t.unit_id) ?? [];
+    arr.push(t);
+    tasksByUnit.set(t.unit_id, arr);
+  }
+
+  // Group units by plan, preserving plan order from `plans` (active first)
+  const planOrder = [...plans].sort((a, b) => {
+    const rank = (s: Plan['status']) => (s === 'active' ? 0 : s === 'draft' ? 1 : 2);
+    return rank(a.status) - rank(b.status);
+  });
+  const showPlanHeader = plans.length > 1;
+
+  if (units.length === 0) {
+    return (
+      <div className="bg-surface rounded-lg border border-border p-4">
+        <h3 className="text-sm font-medium text-foreground mb-3">Units</h3>
+        <div className="text-xs text-muted">No units</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface rounded-lg border border-border p-4 space-y-4">
+      <h3 className="text-sm font-medium text-foreground">Units</h3>
+      {planOrder.map(plan => {
+        const planUnits = units.filter(u => u.plan_id === plan.id);
+        if (planUnits.length === 0) return null;
+
+        const buckets = { now: [] as UnitWithPlan[], next: [] as UnitWithPlan[], done: [] as UnitWithPlan[], empty: [] as UnitWithPlan[] };
+        const doneByUnit = new Map<string, { done: number; total: number }>();
+        for (const u of planUnits) {
+          const ut = tasksByUnit.get(u.id) ?? [];
+          const done = ut.filter(t => CLOSED_STATUSES.has(t.status)).length;
+          doneByUnit.set(u.id, { done, total: ut.length });
+          buckets[classifyUnit(plan.status, ut, activeCycleIds)].push(u);
+        }
+
+        const showAllNext = !!showAllNextByPlan[plan.id];
+        const doneOpen = !!doneOpenByPlan[plan.id];
+        const emptyOpen = !!emptyOpenByPlan[plan.id];
+        const visibleNext = showAllNext ? buckets.next : buckets.next.slice(0, NEXT_DEFAULT_LIMIT);
+        const hiddenNextCount = buckets.next.length - visibleNext.length;
+
+        const renderRow = (u: UnitWithPlan, dim?: boolean) => {
+          const d = doneByUnit.get(u.id) ?? { done: 0, total: 0 };
+          return <UnitRow key={u.id} unit={u} done={d.done} total={d.total} dim={dim} />;
+        };
+
+        return (
+          <div key={plan.id} className="space-y-2">
+            {showPlanHeader && (
+              <div className="flex items-center gap-2 pb-1 border-b border-border">
+                <span className="text-xs font-semibold text-foreground truncate">{plan.title}</span>
+                <PlanStatusPill status={plan.status} />
+                <span className="text-[10px] text-muted">{planUnits.length}</span>
+              </div>
+            )}
+
+            {buckets.now.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-warning font-semibold">
+                  Now ({buckets.now.length})
+                </div>
+                {buckets.now.map(u => {
+                  const d = doneByUnit.get(u.id) ?? { done: 0, total: 0 };
+                  return <UnitRow key={u.id} unit={u} done={d.done} total={d.total} injected />;
+                })}
+              </div>
+            )}
+
+            {buckets.next.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-muted font-semibold">
+                  Next ({buckets.next.length})
+                </div>
+                {visibleNext.map(u => renderRow(u))}
+                {hiddenNextCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllNextByPlan(s => ({ ...s, [plan.id]: true }))}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Show {hiddenNextCount} more
+                  </button>
+                )}
+                {showAllNext && buckets.next.length > NEXT_DEFAULT_LIMIT && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllNextByPlan(s => ({ ...s, [plan.id]: false }))}
+                    className="text-xs text-muted hover:underline"
+                  >
+                    Show less
+                  </button>
+                )}
+              </div>
+            )}
+
+            {buckets.done.length > 0 && (
+              <details
+                open={doneOpen}
+                onToggle={e => setDoneOpenByPlan(s => ({ ...s, [plan.id]: (e.target as HTMLDetailsElement).open }))}
+              >
+                <summary className="text-[10px] uppercase tracking-wide text-muted font-semibold cursor-pointer select-none list-none">
+                  <span className="inline-block w-3">{doneOpen ? '▾' : '▸'}</span>
+                  Done units ({buckets.done.length})
+                </summary>
+                <div className="space-y-1.5 mt-1.5">
+                  {buckets.done.map(u => renderRow(u))}
+                </div>
+              </details>
+            )}
+
+            {buckets.empty.length > 0 && (
+              <details
+                open={emptyOpen}
+                onToggle={e => setEmptyOpenByPlan(s => ({ ...s, [plan.id]: (e.target as HTMLDetailsElement).open }))}
+              >
+                <summary className="text-[10px] uppercase tracking-wide text-muted font-semibold cursor-pointer select-none list-none">
+                  <span className="inline-block w-3">{emptyOpen ? '▾' : '▸'}</span>
+                  Empty ({buckets.empty.length})
+                </summary>
+                <div className="space-y-1.5 mt-1.5">
+                  {buckets.empty.map(u => renderRow(u, true))}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -74,7 +293,7 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
         // Load units for each plan
         const unitResults = await Promise.all(
           planList.map(p => api.listUnits({ plan_id: p.id }).then(units =>
-            units.map(u => ({ ...u, planTitle: p.title }))
+            units.map(u => ({ ...u, planTitle: p.title, planStatus: p.status }))
           ))
         );
         if (cancelled) return;
@@ -89,9 +308,13 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
         const allTasks = taskResults.flat();
         setTasks(allTasks);
 
-        // Load recent runs (limited)
+        // in_progress task 우선 (open run 누락 방지) + 나머지에서 recent activity 채우기
+        const inProgressTasks = allTasks.filter(t => t.status === 'in_progress');
+        const otherTasks = allTasks
+          .filter(t => t.status !== 'in_progress')
+          .slice(0, Math.max(0, 20 - inProgressTasks.length));
         const runResults = await Promise.all(
-          allTasks.slice(0, 20).map(t => api.listRuns({ task_id: t.id }))
+          [...inProgressTasks, ...otherTasks].map(t => api.listRuns({ task_id: t.id }))
         );
         if (cancelled) return;
         setRuns(runResults.flat());
@@ -122,11 +345,22 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
     blocked: tasks.filter(s => s.status === 'blocked').length,
   };
   const totalTasks = tasks.length;
-  const completionPercent = totalTasks > 0 ? Math.round((tasksByStatus.done / totalTasks) * 100) : 0;
+  const completionPercent = totalTasks > 0
+    ? (Math.floor((tasksByStatus.done * 10000) / totalTasks) / 100).toFixed(2)
+    : '0.00';
 
-  // Active agents
-  const activeAgents = [...new Set(
-    tasks.filter(s => s.status === 'in_progress' && s.assignee).map(s => s.assignee!)
+  // Active sessions — open runs (Run.ended_at == null) 의 unique agent.
+  // task.assignee 는 single-user 환경에서 NULL 이거나 'main' 단일값이라 유효 시그널이 아님.
+  // LM-10829 (T6/D): defensive filter — only count runs whose task is actually
+  // in_progress. Without this, daemon restarts / SubagentStop hook misses leak
+  // runs as "open" indefinitely; the card then over-reports phantom sessions.
+  const inProgressTaskIds = new Set(
+    tasks.filter(t => t.status === 'in_progress').map(t => t.id)
+  );
+  const activeSessions = [...new Set(
+    runs
+      .filter(r => r.ended_at === null && inProgressTaskIds.has(r.task_id))
+      .map(r => r.agent)
   )];
 
   // Active cycles
@@ -177,21 +411,21 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
         <StatCard label="Blocked" value={tasksByStatus.blocked} color="text-danger" />
       </div>
 
-      {/* Active agents & cycles */}
+      {/* Active sessions & cycles */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Active Agents */}
+        {/* Active Sessions */}
         <div className="bg-surface rounded-lg border border-border p-4">
-          <h3 className="text-sm font-medium text-foreground mb-3">Active Agents</h3>
-          {activeAgents.length > 0 ? (
+          <h3 className="text-sm font-medium text-foreground mb-3">Active Sessions</h3>
+          {activeSessions.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {activeAgents.map(agent => (
+              {activeSessions.map(agent => (
                 <span key={agent} className="inline-flex items-center px-2 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium">
                   @{agent}
                 </span>
               ))}
             </div>
           ) : (
-            <div className="text-xs text-muted">No active agents</div>
+            <div className="text-xs text-muted">No active sessions</div>
           )}
         </div>
 
@@ -217,30 +451,7 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
         </div>
       </div>
 
-      {/* Unit status */}
-      <div className="bg-surface rounded-lg border border-border p-4">
-        <h3 className="text-sm font-medium text-foreground mb-3">Units</h3>
-        <div className="space-y-2">
-          {units.map(unit => {
-            const unitTasks = tasks.filter(s => s.unit_id === unit.id);
-            const uDone = unitTasks.filter(s => CLOSED_STATUSES.has(s.status)).length;
-            const uTotal = unitTasks.length;
-            return (
-              <div key={unit.id} className="flex items-center gap-3">
-                <span className="text-sm text-foreground flex-1 truncate">{unit.title}</span>
-                <span className="text-xs text-muted whitespace-nowrap">
-                  {uDone}/{uTotal}
-                </span>
-                <div className="w-24 h-1.5 rounded-full bg-surface-high overflow-hidden">
-                  {uTotal > 0 && (
-                    <div className="h-full bg-success rounded-full" style={{ width: `${(uDone / uTotal) * 100}%` }} />
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      <UnitsSection units={units} plans={plans} tasks={tasks} cycles={cycles} />
 
       {/* In-progress tasks */}
       {tasksByStatus.in_progress > 0 && (
@@ -288,7 +499,10 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
                     </span>
                   )}
                   <span className="text-xs text-muted">
-                    {new Date(run.started_at).toLocaleDateString()}
+                    {(() => {
+                      const d = new Date(run.started_at);
+                      return Number.isFinite(d.getTime()) ? d.toLocaleDateString() : '—';
+                    })()}
                   </span>
                 </div>
               );
