@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Project } from '../types';
 import api from '../api';
 import { Button, Input } from './ui';
+import { getCurrentEffectiveTheme, getStoredTheme, setTheme } from '../lib/theme';
 
 function SunIcon({ className }: { className?: string }) {
   return (
@@ -38,18 +39,37 @@ function ClawketLogo() {
   );
 }
 
+/** Sidebar's view of the theme — delegates persistence to lib/theme.ts so
+ *  the Header and Sidebar share a single source of truth (US-CLAWKET-WEB-KEY-001).
+ *  Sidebar exposes a binary toggle ('dark' ⇄ 'light'); the system mode is
+ *  reachable from the Header's tri-state cycle. */
 function useTheme() {
-  const [theme, setThemeState] = useState<'dark' | 'light'>(() => {
-    return (localStorage.getItem('clawket-theme') as 'dark' | 'light') || 'dark';
-  });
+  const [effective, setEffective] = useState<'dark' | 'light'>(getCurrentEffectiveTheme);
 
+  // Re-derive the effective theme whenever localStorage changes (Header may
+  // have flipped it) or the OS preference changes while in 'system' mode.
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('clawket-theme', theme);
-  }, [theme]);
+    const update = () => setEffective(getCurrentEffectiveTheme());
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', update);
+    window.addEventListener('storage', update);
+    return () => {
+      mq.removeEventListener('change', update);
+      window.removeEventListener('storage', update);
+    };
+  }, []);
 
-  const toggle = () => setThemeState(t => t === 'dark' ? 'light' : 'dark');
-  return { theme, toggle };
+  const toggle = useCallback(() => {
+    // Sidebar's binary toggle: pin an explicit theme that's the opposite of
+    // the currently-effective one. This breaks out of 'system' mode if active.
+    const stored = getStoredTheme();
+    const current = stored === 'system' ? effective : stored;
+    const next = current === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    setEffective(next);
+  }, [effective]);
+
+  return { theme: effective, toggle };
 }
 
 interface SidebarProps {
