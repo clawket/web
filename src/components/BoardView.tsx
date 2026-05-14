@@ -20,6 +20,12 @@ import { ArchivedSection } from './board/ArchivedSection';
 interface BoardViewProps {
   projectId: string;
   onSelectTask: (taskId: string) => void;
+  /** US-CLAWKET-WEB-CNT-003 — SSE task delta buffer from App.tsx. We don't
+   *  apply patches in-place here yet (BoardView re-mounts on every patch via
+   *  the App-level `key` keyed off `sseState.patchSeq`), but accept the prop
+   *  so the contract is explicit and future incremental updates can read it
+   *  without another component rename. */
+  taskPatches?: Map<string, Task | null>;
 }
 
 const CYCLE_STATUS_ORDER: Cycle['status'][] = ['planning', 'active'];
@@ -36,7 +42,11 @@ const CYCLE_STATUS_LABEL: Record<Cycle['status'], string> = {
   completed: 'Completed',
 };
 
-export default function BoardView({ projectId, onSelectTask }: BoardViewProps) {
+export default function BoardView({ projectId, onSelectTask, taskPatches: _taskPatches }: BoardViewProps) {
+  // _taskPatches: prop honoured for the SSE contract (US-CLAWKET-WEB-CNT-003).
+  // Re-render is currently driven by the App-level mount key, so we don't read
+  // the map here. Underscored to satisfy lint without a noUnusedParameters edit.
+  void _taskPatches;
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [selectedCycleId, setSelectedCycleId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
