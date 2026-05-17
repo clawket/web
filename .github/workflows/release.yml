@@ -63,25 +63,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Package web bundle
-        shell: bash
-        run: |
-          # Read version from package.json — build was just run, dist/ is fresh.
-          # Bundle name matches what the plugin's install gate fetches:
-          #   ensureWebBundle → `clawket-web-${version}.tar.gz`
-          # (adapters/shared/claude-hooks.cjs:771 in clawket/clawket).
-          VERSION=$(node -p "require('./package.json').version")
-          BUNDLE="clawket-web-v${VERSION}.tar.gz"
-          tar -czf "$BUNDLE" -C dist .
-          if command -v shasum >/dev/null; then
-            shasum -a 256 "$BUNDLE" > "${BUNDLE}.sha256"
-            shasum -a 256 "$BUNDLE" > SHA256SUMS
-          else
-            sha256sum "$BUNDLE" > "${BUNDLE}.sha256"
-            sha256sum "$BUNDLE" > SHA256SUMS
-          fi
-          echo "bundle=$BUNDLE" >> "$GITHUB_ENV"
-
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
@@ -144,16 +125,36 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Upload web bundle to GitHub Release
+      # release-it has bumped package.json + tagged + created the GitHub Release
+      # (with the post-bump bundle attached via its `before:github:release` hook
+      # in .release-it.json). Now compute SHA256SUMS for that exact bundle and
+      # append it to the same release so the plugin install gate can verify
+      # integrity by basename match (clawket/clawket adapters/shared/claude-hooks.cjs:415).
+      - name: Compute and upload SHA256SUMS
+        if: steps.gate.outputs.release == 'true' && steps.read_version.outputs.released == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.read_version.outputs.version }}"
+          BUNDLE="clawket-web-v${VERSION}.tar.gz"
+          if [ ! -f "$BUNDLE" ]; then
+            echo "error: expected $BUNDLE in workspace (created by release-it before:github:release hook)" >&2
+            ls -la *.tar.gz 2>&1 || true
+            exit 1
+          fi
+          if command -v shasum >/dev/null; then
+            shasum -a 256 "$BUNDLE" > SHA256SUMS
+          else
+            sha256sum "$BUNDLE" > SHA256SUMS
+          fi
+          cat SHA256SUMS
+
+      - name: Upload SHA256SUMS to GitHub Release
         if: steps.gate.outputs.release == 'true' && steps.read_version.outputs.released == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.read_version.outputs.tag }}
-          # release-it already created the release; this step appends assets only.
-          files: |
-            clawket-web-v*.tar.gz
-            clawket-web-v*.tar.gz.sha256
-            SHA256SUMS
+          files: SHA256SUMS
 
   bump-manifest:
     needs: release
