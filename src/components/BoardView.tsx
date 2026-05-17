@@ -14,7 +14,8 @@ import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { COLUMNS } from './board/constants';
 import { DroppableColumn } from './board/DroppableColumn';
 import { TaskCard, DraggableTaskCard } from './board/TaskCard';
-import { NewCycleModal } from './board/NewCycleModal';
+import { CycleCreateModal } from './CycleCreateModal';
+import { CycleEditModal } from './CycleEditModal';
 import { ArchivedSection } from './board/ArchivedSection';
 
 interface BoardViewProps {
@@ -53,6 +54,7 @@ export default function BoardView({ projectId, onSelectTask, taskPatches: _taskP
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showNewCycleModal, setShowNewCycleModal] = useState(false);
+  const [editingCycle, setEditingCycle] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
 
@@ -165,7 +167,7 @@ export default function BoardView({ projectId, onSelectTask, taskPatches: _taskP
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-muted text-sm">No cycles yet. Create one to start a sprint.</div>
         <Button variant="primary" onClick={() => setShowNewCycleModal(true)}>New Cycle</Button>
-        {showNewCycleModal && <NewCycleModal projectId={projectId} onCreated={handleCycleCreated} onClose={() => setShowNewCycleModal(false)} />}
+        {showNewCycleModal && <CycleCreateModal projectId={projectId} onCreated={handleCycleCreated} onClose={() => setShowNewCycleModal(false)} />}
       </div>
     );
   }
@@ -190,6 +192,16 @@ export default function BoardView({ projectId, onSelectTask, taskPatches: _taskP
         <div className="flex-1" />
         {selectedCycle && (
           <div className="flex items-center gap-2">
+            {selectedCycle.status !== 'completed' && (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="cycle-edit-open"
+                onClick={() => setEditingCycle(true)}
+              >
+                Edit
+              </Button>
+            )}
             <Badge variant={CYCLE_STATUS_BADGE_VARIANT[selectedCycle.status]} size="sm">{CYCLE_STATUS_LABEL[selectedCycle.status]}</Badge>
             <Select size="sm" className="w-auto min-w-[120px]" value={selectedCycle.status} onChange={(e) => handleCycleStatusChange(e.target.value as Cycle['status'])} disabled={statusUpdating}>
               {CYCLE_STATUS_ORDER.map((s) => <option key={s} value={s}>{CYCLE_STATUS_LABEL[s]}</option>)}
@@ -237,7 +249,14 @@ export default function BoardView({ projectId, onSelectTask, taskPatches: _taskP
 
       <ArchivedSection tasksByStatus={tasksByStatus} onSelectTask={onSelectTask} />
 
-      {showNewCycleModal && <NewCycleModal projectId={projectId} onCreated={handleCycleCreated} onClose={() => setShowNewCycleModal(false)} />}
+      {showNewCycleModal && <CycleCreateModal projectId={projectId} onCreated={handleCycleCreated} onClose={() => setShowNewCycleModal(false)} />}
+      {editingCycle && selectedCycle && (
+        <CycleEditModal
+          cycle={selectedCycle}
+          onClose={() => setEditingCycle(false)}
+          onUpdated={(next) => setCycles((prev) => prev.map((c) => (c.id === next.id ? next : c)))}
+        />
+      )}
     </div>
   );
 }

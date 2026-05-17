@@ -1,298 +1,417 @@
-import { useState, useEffect, useCallback } from 'react';
-import type { Project } from '../types';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import type { Project, Plan, Cycle, Unit, Task } from '../types';
 import api from '../api';
-import { Button, Input } from './ui';
-import { getCurrentEffectiveTheme, getStoredTheme, setTheme } from '../lib/theme';
+import { AppShell } from './shell/AppShell';
+import { BrandMark } from './shell/BrandMark';
+import { ProjectSwitcher } from './shell/ProjectSwitcher';
+import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { cn } from '../lib/cn';
+import PlanTree from './PlanTree';
 
-function SunIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="5" />
-      <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-      <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-    </svg>
-  );
+type SelectedItem =
+  | { type: 'plan'; id: string }
+  | { type: 'unit'; id: string }
+  | { type: 'task'; id: string };
+
+const SIDEBAR_WIDTH_KEY = 'clawket.sidebarWidth';
+const SIDEBAR_COLLAPSED_KEY = 'clawket.sidebarCollapsed';
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 480;
+const DEFAULT_WIDTH = 288;
+const COLLAPSED_WIDTH = 48;
+
+function clampWidth(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_WIDTH;
+  if (n < MIN_WIDTH) return MIN_WIDTH;
+  if (n > MAX_WIDTH) return MAX_WIDTH;
+  return Math.round(n);
 }
 
-function MoonIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
-  );
+function readStoredWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (!raw) return DEFAULT_WIDTH;
+    return clampWidth(Number.parseInt(raw, 10));
+  } catch {
+    return DEFAULT_WIDTH;
+  }
 }
 
-function ClawketLogo() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
-      {/* Ticket */}
-      <rect x="6" y="12" width="18" height="10" rx="2" fill="#FACC15"/>
-      <circle cx="6" cy="17" r="2" fill="white"/>
-      {/* Punch hole */}
-      <circle cx="15" cy="17" r="1.5" fill="currentColor" opacity="0.3"/>
-      {/* Claw */}
-      <path d="M20 6 C24 4, 28 8, 24 12" stroke="#EF4444" strokeWidth="3" strokeLinecap="round"/>
-      <path d="M20 6 C22 10, 18 12, 16 10" stroke="#EF4444" strokeWidth="3" strokeLinecap="round"/>
-    </svg>
-  );
+function writeStoredWidth(width: number): void {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
+  } catch {
+    // storage unavailable — ignore
+  }
 }
 
-/** Sidebar's view of the theme — delegates persistence to lib/theme.ts so
- *  the Header and Sidebar share a single source of truth (US-CLAWKET-WEB-KEY-001).
- *  Sidebar exposes a binary toggle ('dark' ⇄ 'light'); the system mode is
- *  reachable from the Header's tri-state cycle. */
-function useTheme() {
-  const [effective, setEffective] = useState<'dark' | 'light'>(getCurrentEffectiveTheme);
+function readStoredCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
-  // Re-derive the effective theme whenever localStorage changes (Header may
-  // have flipped it) or the OS preference changes while in 'system' mode.
-  useEffect(() => {
-    const update = () => setEffective(getCurrentEffectiveTheme());
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    mq.addEventListener('change', update);
-    window.addEventListener('storage', update);
-    return () => {
-      mq.removeEventListener('change', update);
-      window.removeEventListener('storage', update);
-    };
-  }, []);
+function writeStoredCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // storage unavailable — ignore
+  }
+}
 
-  const toggle = useCallback(() => {
-    // Sidebar's binary toggle: pin an explicit theme that's the opposite of
-    // the currently-effective one. This breaks out of 'system' mode if active.
-    const stored = getStoredTheme();
-    const current = stored === 'system' ? effective : stored;
-    const next = current === 'dark' ? 'light' : 'dark';
-    setTheme(next);
-    setEffective(next);
-  }, [effective]);
+function pickActivePlan(plans: Plan[]): Plan | null {
+  return plans.find((p) => p.status === 'active') ?? plans[0] ?? null;
+}
 
-  return { theme: effective, toggle };
+function pickActiveCycle(
+  cycles: Cycle[],
+  units: Unit[],
+  plan: Plan | null,
+): Cycle | null {
+  if (!plan) {
+    return cycles.find((c) => c.status === 'active') ?? null;
+  }
+  const planUnitIds = new Set(
+    units.filter((u) => u.plan_id === plan.id).map((u) => u.id),
+  );
+  return (
+    cycles.find(
+      (c) =>
+        c.status === 'active' &&
+        c.unit_id != null &&
+        planUnitIds.has(c.unit_id),
+    ) ?? cycles.find((c) => c.status === 'active') ?? null
+  );
 }
 
 interface SidebarProps {
   projects: Project[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onProjectCreated: (project: Project) => void;
-  activeView: 'summary' | 'plans' | 'board' | 'backlog' | 'timeline' | 'wiki';
-  onViewChange: (view: 'summary' | 'plans' | 'board' | 'backlog' | 'timeline' | 'wiki') => void;
+  /** Opens the ProjectCreateModal owned by App. */
+  onOpenProjectCreate: () => void;
+  /** Fired after the active project is edited via ProjectSettingsModal. App
+   *  uses this to refresh the projects[] state in place. */
+  onProjectUpdated: (project: Project) => void;
+  /** Bumps when SSE structural events fire so the active context refreshes. */
+  refreshKey?: number;
+  /** PlanTree selection — currently focused plan / unit / task in the tree. */
+  selectedItem: SelectedItem | null;
+  onSelectItem: (item: SelectedItem | null) => void;
+  onCreatePlan: () => void;
+  onCreateUnit: (planId: string) => void;
+  onCreateTask: (unitId: string) => void;
+  /** SSE delta buffer forwarded to PlanTree for in-place row patching. */
+  taskPatches?: Map<string, Task | null>;
 }
 
-const viewNavItems: { key: 'summary' | 'plans' | 'board' | 'backlog' | 'timeline' | 'wiki'; icon: string; label: string }[] = [
-  { key: 'summary', icon: '\u25A3', label: 'Summary' },
-  { key: 'plans', icon: '\u2261', label: 'Plans' },
-  { key: 'board', icon: '\u229E', label: 'Board' },
-  { key: 'backlog', icon: '\u2630', label: 'Backlog' },
-  { key: 'timeline', icon: '\u23F1', label: 'Timeline' },
-  { key: 'wiki', icon: '\u2263', label: 'Wiki' },
-];
+export default function Sidebar({
+  projects,
+  selectedId,
+  onSelect,
+  onOpenProjectCreate,
+  onProjectUpdated,
+  refreshKey = 0,
+  selectedItem,
+  onSelectItem,
+  onCreatePlan,
+  onCreateUnit,
+  onCreateTask,
+  taskPatches,
+}: SidebarProps) {
+  const [collapsed, setCollapsed] = useState<boolean>(readStoredCollapsed);
+  const [width, setWidth] = useState<number>(readStoredWidth);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-export default function Sidebar({ projects, selectedId, onSelect, onProjectCreated, activeView, onViewChange }: SidebarProps) {
-  const { theme, toggle: toggleTheme } = useTheme();
-  const [collapsed, setCollapsed] = useState(() => {
-    return localStorage.getItem('clawket-sidebar-collapsed') === 'true';
-  });
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newCwd, setNewCwd] = useState('');
+  const [activeContext, setActiveContext] = useState<{
+    projectId: string;
+    plan: Plan | null;
+    cycle: Cycle | null;
+  } | null>(null);
 
-  function toggleCollapse() {
-    setCollapsed(prev => {
+  useEffect(() => {
+    if (!selectedId) return;
+    let cancelled = false;
+    Promise.all([
+      api.listPlans({ project_id: selectedId }),
+      api.listCycles({ project_id: selectedId }),
+      api.listUnits(),
+    ])
+      .then(([plans, cycles, units]) => {
+        if (cancelled) return;
+        const plan = pickActivePlan(plans);
+        const planUnits = units.filter(
+          (u) => plan && u.plan_id === plan.id,
+        );
+        setActiveContext({
+          projectId: selectedId,
+          plan,
+          cycle: pickActiveCycle(cycles, planUnits, plan),
+        });
+      })
+      .catch((err) => {
+        console.error('Sidebar: failed to load active context:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, refreshKey]);
+
+  const contextMatches =
+    activeContext !== null && activeContext.projectId === selectedId;
+  const activePlan = contextMatches ? activeContext.plan : null;
+  const activeCycle = contextMatches ? activeContext.cycle : null;
+
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const moveHandlerRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const upHandlerRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (moveHandlerRef.current) {
+        window.removeEventListener('pointermove', moveHandlerRef.current);
+        moveHandlerRef.current = null;
+      }
+      if (upHandlerRef.current) {
+        window.removeEventListener('pointerup', upHandlerRef.current);
+        upHandlerRef.current = null;
+      }
+    };
+  }, []);
+
+  function onHandlePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: width };
+
+    const onMove = (ev: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      setWidth(clampWidth(drag.startWidth + (ev.clientX - drag.startX)));
+    };
+    const onUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      if (moveHandlerRef.current) {
+        window.removeEventListener('pointermove', moveHandlerRef.current);
+        moveHandlerRef.current = null;
+      }
+      if (upHandlerRef.current) {
+        window.removeEventListener('pointerup', upHandlerRef.current);
+        upHandlerRef.current = null;
+      }
+      setWidth((w) => {
+        writeStoredWidth(w);
+        return w;
+      });
+    };
+
+    moveHandlerRef.current = onMove;
+    upHandlerRef.current = onUp;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  const toggleCollapse = useCallback(() => {
+    setCollapsed((prev) => {
       const next = !prev;
-      localStorage.setItem('clawket-sidebar-collapsed', String(next));
+      writeStoredCollapsed(next);
       return next;
     });
-  }
+  }, []);
 
-  async function handleCreate() {
-    if (!newName.trim()) return;
-    try {
-      const project = await api.createProject({
-        name: newName.trim(),
-        cwd: newCwd.trim() || undefined,
-      });
-      onProjectCreated(project);
-      setNewName('');
-      setNewCwd('');
-      setCreating(false);
-    } catch (err) {
-      console.error('Failed to create project:', err);
-    }
-  }
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === selectedId) ?? null,
+    [projects, selectedId],
+  );
 
   if (collapsed) {
     return (
-      <aside className="w-12 shrink-0 bg-surface border-r border-border flex flex-col h-full">
-        {/* Expand button */}
-        <div className="px-2 py-3 border-b border-border flex justify-center">
+      <AppShell.Sidebar
+        data-testid="app-sidebar"
+        data-collapsed="true"
+        className="overflow-visible"
+        style={{ width: `${COLLAPSED_WIDTH}px` }}
+      >
+        <div className="h-12 shrink-0 flex items-center justify-center border-b border-border">
           <button
+            type="button"
             onClick={toggleCollapse}
-            className="text-muted hover:text-foreground transition-colors cursor-pointer"
             title="Expand sidebar"
+            aria-label="Expand sidebar"
+            className="p-1 text-muted hover:text-foreground transition-colors cursor-pointer"
           >
-            {'\u25B6'}
+            <BrandMark size={20} />
           </button>
         </div>
-
-        {/* Project icons */}
-        <div className="flex-1 overflow-y-auto py-2 space-y-1">
+        <nav
+          aria-label="Projects"
+          className="flex-1 overflow-y-auto py-2 space-y-1"
+        >
           {projects.map((p) => (
             <button
               key={p.id}
+              type="button"
               onClick={() => onSelect(p.id)}
               title={p.name}
-              className={`w-full flex justify-center py-2 transition-colors cursor-pointer ${
+              className={cn(
+                'w-full flex justify-center py-2 transition-colors cursor-pointer',
                 selectedId === p.id
                   ? 'text-primary bg-primary/15'
-                  : 'text-muted hover:text-foreground hover:bg-surface-hover'
-              }`}
+                  : 'text-muted hover:text-foreground hover:bg-surface-hover',
+              )}
             >
-              <span className="text-xs font-bold">{p.name.charAt(0).toUpperCase()}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* View icons */}
-        <nav className="border-t border-border py-1">
-          {viewNavItems.map((item) => (
-            <button
-              key={item.key}
-              onClick={() => onViewChange(item.key)}
-              title={item.label}
-              className={`w-full flex justify-center py-2 transition-colors cursor-pointer ${
-                activeView === item.key
-                  ? 'text-primary bg-primary/15'
-                  : 'text-muted hover:text-foreground hover:bg-surface-hover'
-              }`}
-            >
-              <span>{item.icon}</span>
+              <span className="text-xs font-bold">
+                {p.name.charAt(0).toUpperCase()}
+              </span>
             </button>
           ))}
         </nav>
-
-        {/* Theme toggle */}
-        <div className="border-t border-border py-2 flex justify-center">
-          <button
-            onClick={toggleTheme}
-            className="text-muted hover:text-foreground transition-colors cursor-pointer"
-            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
-          >
-            {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-          </button>
-        </div>
-      </aside>
+      </AppShell.Sidebar>
     );
   }
 
   return (
-    <aside className="w-60 shrink-0 bg-surface border-r border-border flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <h1 className="text-sm font-semibold text-foreground tracking-wide uppercase flex items-center gap-2">
-          <ClawketLogo />
-          Clawket
-        </h1>
-        <button
-          onClick={toggleCollapse}
-          className="text-muted hover:text-foreground transition-colors cursor-pointer text-xs"
-          title="Collapse sidebar"
-        >
-          {'\u25C0'}
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto py-2">
-        {projects.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelect(p.id)}
-            className={`w-full text-left px-4 py-2.5 transition-colors ${
-              selectedId === p.id
-                ? 'bg-primary/15 text-primary border-l-2 border-primary'
-                : 'text-foreground hover:bg-surface-hover border-l-2 border-transparent'
-            }`}
-          >
-            <div className="text-sm font-medium truncate">{p.name}</div>
-            {p.cwds.length > 0 && (
-              <div className="text-xs text-muted truncate mt-0.5" title={p.cwds[0]}>
-                {p.cwds[0].split('/').slice(-2).join('/')}
-              </div>
-            )}
-          </button>
-        ))}
-        {projects.length === 0 && (
-          <div className="px-4 py-6 text-center text-muted text-sm">No projects yet</div>
+    <AppShell.Sidebar
+      data-testid="app-sidebar"
+      data-width={width}
+      className="relative overflow-visible"
+      style={{ width: `${width}px` }}
+    >
+      <header
+        className={cn(
+          'shrink-0',
+          'flex flex-col',
+          'border-b border-border',
         )}
-      </div>
-
-      <nav className="border-t border-border py-1">
-        {viewNavItems.map((item) => (
-          <button
-            key={item.key}
-            onClick={() => onViewChange(item.key)}
-            className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-              activeView === item.key
-                ? 'bg-primary/15 text-primary border-l-2 border-primary'
-                : 'text-foreground hover:bg-surface-hover border-l-2 border-transparent'
-            }`}
+      >
+        <div className="h-12 shrink-0 flex items-center gap-2 px-3">
+          <BrandMark size={24} className="shrink-0" />
+          <span
+            data-testid="sidebar-brand-name"
+            className="shrink-0 text-sm font-semibold text-foreground"
           >
-            <span className="mr-2">{item.icon}</span>{item.label}
+            Clawket
+          </span>
+          <span className="flex-1" />
+          <span className="shrink-0 text-xs text-muted">v3.0</span>
+          <button
+            type="button"
+            onClick={toggleCollapse}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            className="shrink-0 text-xs text-muted hover:text-foreground transition-colors cursor-pointer px-1"
+          >
+            {'◀'}
           </button>
-        ))}
+        </div>
+        <div className="h-10 shrink-0 flex items-center gap-1 px-3 pb-2">
+          <ProjectSwitcher
+            projects={projects}
+            activeProjectId={selectedId}
+            onSelect={onSelect}
+            onCreateProject={onOpenProjectCreate}
+            fallbackLabel={activeProject ? activeProject.name : 'Select project'}
+          />
+          {activeProject && (
+            <button
+              type="button"
+              data-testid="sidebar-project-settings"
+              onClick={() => setSettingsOpen(true)}
+              title="Project settings"
+              aria-label="Project settings"
+              className="shrink-0 text-xs text-muted hover:text-foreground transition-colors cursor-pointer px-1"
+            >
+              ⚙
+            </button>
+          )}
+        </div>
+      </header>
+
+      <section
+        className="flex flex-col gap-1 border-b border-border px-4 py-3"
+        aria-label="Active context"
+      >
+        <p className="text-xs uppercase tracking-wide text-muted">Active</p>
+        {activePlan ? (
+          <>
+            <p
+              data-testid="sidebar-active-plan"
+              className="text-sm font-medium text-foreground truncate"
+              title={activePlan.title}
+            >
+              {activePlan.title}
+            </p>
+            <p
+              data-testid="sidebar-active-cycle"
+              className="text-xs text-muted truncate"
+              title={activeCycle?.title}
+            >
+              {activeCycle ? `Cycle: ${activeCycle.title}` : 'No active cycle'}
+            </p>
+          </>
+        ) : (
+          <p
+            data-testid="sidebar-active-plan"
+            className="text-sm text-muted italic"
+          >
+            {selectedId ? 'No active plan' : 'Select a project'}
+          </p>
+        )}
+      </section>
+
+      <nav
+        aria-label="Plan tree"
+        className="min-h-0 flex-1 overflow-auto"
+      >
+        {selectedId ? (
+          <PlanTree
+            key={`plantree-${selectedId}-${refreshKey}`}
+            projectId={selectedId}
+            selectedItem={selectedItem}
+            onSelectItem={onSelectItem}
+            onCreatePlan={onCreatePlan}
+            onCreateUnit={onCreateUnit}
+            onCreateTask={onCreateTask}
+            taskPatches={taskPatches}
+          />
+        ) : (
+          <div className="px-4 py-6 text-center text-muted text-sm">
+            {projects.length === 0 ? 'No projects yet' : 'Select a project'}
+          </div>
+        )}
       </nav>
 
-      <div className="border-t border-border p-3">
-        {creating ? (
-          <div className="space-y-2">
-            <Input
-              size="sm"
-              type="text"
-              placeholder="Project name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              autoFocus
-              onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setCreating(false); }}
-            />
-            <Input
-              size="sm"
-              type="text"
-              placeholder="Working directory (optional)"
-              value={newCwd}
-              onChange={(e) => setNewCwd(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setCreating(false); }}
-            />
-            <div className="flex gap-2">
-              <Button variant="primary" size="sm" className="flex-1" onClick={handleCreate}>
-                Create
-              </Button>
-              <Button variant="outline" size="sm" className="flex-1" onClick={() => setCreating(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full border border-dashed border-border hover:border-primary"
-            onClick={() => setCreating(true)}
-          >
-            + New Project
-          </Button>
+      <div
+        data-testid="sidebar-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onPointerDown={onHandlePointerDown}
+        className={cn(
+          'absolute right-0 top-0 h-full w-1.5 translate-x-1/2 z-10',
+          'cursor-col-resize',
+          'hover:bg-primary/40',
         )}
-      </div>
-
-      {/* Theme toggle */}
-      <div className="border-t border-border px-3 py-2">
-        <button
-          onClick={toggleTheme}
-          className="w-full text-xs text-muted hover:text-foreground py-1.5 rounded transition-colors flex items-center justify-center gap-2 cursor-pointer"
-        >
-          {theme === 'dark' ? <><SunIcon /> Light</> : <><MoonIcon /> Dark</>}
-        </button>
-      </div>
-    </aside>
+      />
+      {settingsOpen && activeProject && (
+        <ProjectSettingsModal
+          project={activeProject}
+          onClose={() => setSettingsOpen(false)}
+          onUpdated={(next) => {
+            onProjectUpdated(next);
+            setSettingsOpen(false);
+          }}
+        />
+      )}
+    </AppShell.Sidebar>
   );
 }

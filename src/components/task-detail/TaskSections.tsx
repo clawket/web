@@ -11,14 +11,14 @@ function formatTime(ts: number | string | null | undefined): string {
 
 export function ArtifactsSection({ artifacts }: { artifacts: Artifact[] }) {
   return (
-    <div>
+    <div data-testid="task-detail-artifacts">
       <Label>Artifacts ({artifacts.length})</Label>
       {artifacts.length === 0 ? (
         <div className="text-sm text-muted italic">No artifacts</div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {artifacts.map((a) => (
-            <div key={a.id} className="flex items-center gap-2 bg-background border border-border rounded px-3 py-2">
+            <div key={a.id} className="flex items-center gap-2 bg-background border border-border rounded p-3">
               <span className="text-xs font-mono bg-secondary/20 text-secondary px-1.5 py-0.5 rounded">{a.type}</span>
               <span className="text-sm text-foreground truncate flex-1">{a.title}</span>
               <span className="text-xs text-muted">{a.content_format}</span>
@@ -32,28 +32,28 @@ export function ArtifactsSection({ artifacts }: { artifacts: Artifact[] }) {
 
 export function RunsSection({ runs }: { runs: Run[] }) {
   return (
-    <div>
+    <div data-testid="task-detail-runs">
       <Label>Runs ({runs.length})</Label>
       {runs.length === 0 ? (
         <div className="text-sm text-muted italic">No runs</div>
       ) : (
-        <div className="border border-border rounded overflow-hidden">
+        <div className="bg-background border border-border rounded overflow-hidden">
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-background text-muted">
-                <th className="text-left px-2 py-1.5 font-medium">Agent</th>
-                <th className="text-left px-2 py-1.5 font-medium">Started</th>
-                <th className="text-left px-2 py-1.5 font-medium">Ended</th>
-                <th className="text-left px-2 py-1.5 font-medium">Result</th>
+              <tr className="bg-surface-high text-muted">
+                <th className="text-left px-3 py-2 font-medium">Agent</th>
+                <th className="text-left px-3 py-2 font-medium">Started</th>
+                <th className="text-left px-3 py-2 font-medium">Ended</th>
+                <th className="text-left px-3 py-2 font-medium">Result</th>
               </tr>
             </thead>
             <tbody>
               {runs.map((r) => (
                 <tr key={r.id} className="border-t border-border">
-                  <td className="px-2 py-1.5 text-foreground">{r.agent}</td>
-                  <td className="px-2 py-1.5 text-muted">{formatTime(r.started_at)}</td>
-                  <td className="px-2 py-1.5 text-muted">{formatTime(r.ended_at)}</td>
-                  <td className="px-2 py-1.5">
+                  <td className="px-3 py-2 text-foreground">{r.agent}</td>
+                  <td className="px-3 py-2 text-muted">{formatTime(r.started_at)}</td>
+                  <td className="px-3 py-2 text-muted">{formatTime(r.ended_at)}</td>
+                  <td className="px-3 py-2">
                     {r.result ? <StatusBadge status={r.result} size="sm" /> : <span className="text-warning">running</span>}
                   </td>
                 </tr>
@@ -68,7 +68,7 @@ export function RunsSection({ runs }: { runs: Run[] }) {
 
 export function QuestionsSection({ questions }: { questions: Question[] }) {
   return (
-    <div>
+    <div data-testid="task-detail-questions">
       <Label>Questions ({questions.length})</Label>
       {questions.length === 0 ? (
         <div className="text-sm text-muted italic">No questions</div>

@@ -17,6 +17,12 @@ interface CommandPaletteProps {
 export default function CommandPalette({ commands, open, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
+  // React docs: "Adjusting some state when a prop changes" pattern — store
+  // previous prop in state and compare during render. Cheaper than useEffect
+  // and avoids cascading renders.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevQuery, setPrevQuery] = useState(query);
+  const [prevOpen, setPrevOpen] = useState(open);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -27,16 +33,25 @@ export default function CommandPalette({ commands, open, onClose }: CommandPalet
       )
     : commands;
 
-  useEffect(() => {
+  if (query !== prevQuery) {
+    setPrevQuery(query);
     setActiveIdx(0);
-  }, [query]);
+  }
 
-  useEffect(() => {
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       setQuery('');
       setActiveIdx(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
     }
+  }
+
+  // DOM side effect: focus the input shortly after opening so the dialog
+  // animation does not steal focus.
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => inputRef.current?.focus(), 50);
+    return () => clearTimeout(t);
   }, [open]);
 
   const run = useCallback((cmd: CommandItem) => {

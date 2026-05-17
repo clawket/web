@@ -571,7 +571,7 @@ export default function WikiView({ projectId }: WikiViewProps) {
   return (
     <div className="flex-1 flex min-h-0">
       {/* Sidebar - artifact tree */}
-      <div className="w-64 shrink-0 border-r border-border flex flex-col">
+      <div className="w-64 shrink-0 border-r border-border flex flex-col min-h-0">
         <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2">
           <h3 className="text-sm font-medium text-foreground shrink-0">Wiki</h3>
           <Button variant="ghost" size="sm" onClick={() => setShowCreate(true)}>

@@ -11,7 +11,9 @@ export function useDaemonHealth(opts?: {
   const [connected, setConnected] = useState<boolean>(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
-  onStatusChangeRef.current = onStatusChange;
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  });
 
   // Track previous connected state in a ref so we can fire the status callback
   // *after* the setConnected update without putting side effects inside the
@@ -35,9 +37,13 @@ export function useDaemonHealth(opts?: {
   }, []);
 
   useEffect(() => {
-    poll(); // immediate check on mount
-    timerRef.current = setInterval(poll, intervalMs);
+    // Defer the first poll past commit so setState lands outside the effect
+    // body (react-hooks/set-state-in-effect is satisfied; UX-equivalent to
+    // calling poll() synchronously since both resolve via async fetch).
+    const initialTimer = setTimeout(() => { void poll(); }, 0);
+    timerRef.current = setInterval(() => { void poll(); }, intervalMs);
     return () => {
+      clearTimeout(initialTimer);
       if (timerRef.current !== null) clearInterval(timerRef.current);
     };
   }, [poll, intervalMs]);

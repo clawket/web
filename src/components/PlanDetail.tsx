@@ -1,32 +1,39 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Plan, Unit, Artifact, Question } from '../types';
+import type { Plan, Unit, Task, Artifact, Question } from '../types';
 import api from '../api';
 import StatusBadge from './StatusBadge';
-import { Label } from './ui';
+import { Button, Label } from './ui';
+import { PlanEditModal } from './PlanEditModal';
+import DetailBreadcrumb, { type DetailBreadcrumbKind } from './DetailBreadcrumb';
 
 interface PlanDetailProps {
   planId: string;
   onClose: () => void;
+  onSelectItem?: (item: { type: DetailBreadcrumbKind; id: string }) => void;
 }
 
-export default function PlanDetail({ planId, onClose }: PlanDetailProps) {
+export default function PlanDetail({ planId, onClose, onSelectItem }: PlanDetailProps) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [units, setUnits] = useState<Unit[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [p, u, a, q] = await Promise.all([
+      const [p, u, t, a, q] = await Promise.all([
         api.getPlan(planId),
         api.listUnits({ plan_id: planId }),
+        api.listTasks({ plan_id: planId }),
         api.listArtifacts({ plan_id: planId }),
         api.listQuestions({ plan_id: planId }),
       ]);
       setPlan(p);
       setUnits(u.sort((a, b) => a.idx - b.idx));
+      setTasks(t.sort((a, b) => a.idx - b.idx));
       setArtifacts(a);
       setQuestions(q);
     } catch (err) {
@@ -61,10 +68,35 @@ export default function PlanDetail({ planId, onClose }: PlanDetailProps) {
           <span className="text-xs text-muted font-mono">{plan.id.slice(0, 8)}</span>
           <StatusBadge status={plan.status} />
         </div>
-        <button onClick={onClose} className="text-muted hover:text-foreground text-lg leading-none">&times;</button>
+        <div className="flex items-center gap-2">
+          {plan.status !== 'completed' && (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="plan-detail-edit"
+              onClick={() => setEditing(true)}
+            >
+              Edit
+            </Button>
+          )}
+          <button onClick={onClose} className="text-muted hover:text-foreground text-lg leading-none">&times;</button>
+        </div>
       </div>
 
       <div className="p-4 space-y-5">
+        {/* Breadcrumb (LM-10984) */}
+        <DetailBreadcrumb
+          items={[
+            {
+              type: 'plan',
+              id: plan.id,
+              label: plan.title,
+              status: plan.status,
+            },
+          ]}
+          onSelectItem={onSelectItem}
+        />
+
         {/* Title */}
         <h2 className="text-lg font-semibold text-foreground">{plan.title}</h2>
 
@@ -98,20 +130,62 @@ export default function PlanDetail({ planId, onClose }: PlanDetailProps) {
           <div><span className="text-muted">Approved:</span> <span className="text-foreground">{formatTime(plan.approved_at)}</span></div>
         </div>
 
-        {/* Units overview */}
+        {/* Units overview (LM-10985 — tree-aware listing: unit + nested tasks) */}
         <div>
           <Label>Units ({units.length})</Label>
           {units.length === 0 ? (
             <div className="text-sm text-muted italic">No units yet</div>
           ) : (
-            <div className="space-y-1.5">
-              {units.map((u) => (
-                <div key={u.id} className="flex items-center gap-2 bg-background border border-border rounded px-3 py-2">
-                  <span className="text-xs text-muted font-mono w-5">#{u.idx + 1}</span>
-                  <span className="text-sm text-foreground truncate flex-1">{u.title}</span>
-                  {/* Unit: no status */}
-                </div>
-              ))}
+            <div className="space-y-2" data-testid="plan-detail-units">
+              {units.map((u) => {
+                const unitTasks = tasks.filter((t) => t.unit_id === u.id);
+                return (
+                  <div key={u.id} className="space-y-1">
+                    <button
+                      type="button"
+                      data-testid={`plan-detail-unit-${u.id}`}
+                      onClick={() => onSelectItem?.({ type: 'unit', id: u.id })}
+                      disabled={!onSelectItem}
+                      className={`flex w-full items-center gap-2 bg-background border border-border rounded px-3 py-2 text-left ${
+                        onSelectItem ? 'hover:border-primary/60 hover:bg-surface-high' : 'cursor-default'
+                      }`}
+                    >
+                      <span className="text-xs text-muted font-mono w-5">#{u.idx + 1}</span>
+                      <span className="text-sm text-foreground truncate flex-1">{u.title}</span>
+                      <span className="text-xs text-muted shrink-0">
+                        {unitTasks.length} task{unitTasks.length === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                    {unitTasks.length > 0 && (
+                      <ul
+                        data-testid={`plan-detail-unit-${u.id}-tasks`}
+                        className="ml-4 space-y-0.5 border-l border-border pl-2"
+                      >
+                        {unitTasks.map((t) => (
+                          <li key={t.id}>
+                            <button
+                              type="button"
+                              data-testid={`plan-detail-task-${t.id}`}
+                              onClick={() => onSelectItem?.({ type: 'task', id: t.id })}
+                              disabled={!onSelectItem}
+                              className={`flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left text-sm ${
+                                onSelectItem ? 'hover:bg-surface-high' : 'cursor-default'
+                              }`}
+                              title={t.title}
+                            >
+                              <StatusBadge status={t.status} size="sm" />
+                              {t.ticket_number && (
+                                <span className="font-mono text-xs text-muted">{t.ticket_number}</span>
+                              )}
+                              <span className="truncate text-foreground">{t.title}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -156,6 +230,13 @@ export default function PlanDetail({ planId, onClose }: PlanDetailProps) {
           </div>
         )}
       </div>
+      {editing && (
+        <PlanEditModal
+          plan={plan}
+          onClose={() => setEditing(false)}
+          onUpdated={(next) => setPlan(next)}
+        />
+      )}
     </div>
   );
 }

@@ -1,21 +1,26 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Unit, Task, Artifact, Question } from '../types';
+import type { Unit, Task, Artifact, Question, Plan } from '../types';
 import { CLOSED_STATUSES } from '../types';
 import api from '../api';
 import StatusBadge from './StatusBadge';
-import { Label } from './ui';
+import { Button, Label } from './ui';
+import { UnitEditModal } from './UnitEditModal';
+import DetailBreadcrumb, { type DetailBreadcrumbKind } from './DetailBreadcrumb';
 
 interface UnitDetailProps {
   unitId: string;
   onClose: () => void;
+  onSelectItem?: (item: { type: DetailBreadcrumbKind; id: string }) => void;
 }
 
-export default function UnitDetail({ unitId, onClose }: UnitDetailProps) {
+export default function UnitDetail({ unitId, onClose, onSelectItem }: UnitDetailProps) {
   const [unit, setUnit] = useState<Unit | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -30,6 +35,11 @@ export default function UnitDetail({ unitId, onClose }: UnitDetailProps) {
       setTasks(st.sort((a, b) => a.idx - b.idx));
       setArtifacts(a);
       setQuestions(q);
+      if (ph.plan_id) {
+        api.getPlan(ph.plan_id).then(setPlan).catch(() => setPlan(null));
+      } else {
+        setPlan(null);
+      }
     } catch (err) {
       console.error('Failed to load unit:', err);
     } finally {
@@ -70,10 +80,40 @@ export default function UnitDetail({ unitId, onClose }: UnitDetailProps) {
           <span className="text-xs text-muted font-mono">{unit.id.slice(0, 8)}</span>
           {/* Unit: no status */}
         </div>
-        <button onClick={onClose} className="text-muted hover:text-foreground text-lg leading-none">&times;</button>
+        <div className="flex items-center gap-2">
+          {!unit.completed_at && (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="unit-detail-edit"
+              onClick={() => setEditing(true)}
+            >
+              Edit
+            </Button>
+          )}
+          <button onClick={onClose} className="text-muted hover:text-foreground text-lg leading-none">&times;</button>
+        </div>
       </div>
 
       <div className="p-4 space-y-5">
+        {/* Breadcrumb (LM-10984) */}
+        <DetailBreadcrumb
+          items={[
+            ...(plan
+              ? [
+                  {
+                    type: 'plan' as const,
+                    id: plan.id,
+                    label: plan.title,
+                    status: plan.status,
+                  },
+                ]
+              : []),
+            { type: 'unit', id: unit.id, label: unit.title },
+          ]}
+          onSelectItem={onSelectItem}
+        />
+
         {/* Title */}
         <h2 className="text-lg font-semibold text-foreground">{unit.title}</h2>
 
@@ -133,16 +173,29 @@ export default function UnitDetail({ unitId, onClose }: UnitDetailProps) {
           </div>
         </div>
 
-        {/* Tasks summary */}
+        {/* Tasks summary (LM-10985 — clickable rows route to TaskDetail) */}
         <div>
           <Label>Tasks ({tasks.length})</Label>
-          <div className="space-y-1">
+          <div className="space-y-1" data-testid="unit-detail-tasks">
             {tasks.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 text-sm">
+              <button
+                key={s.id}
+                type="button"
+                data-testid={`unit-detail-task-${s.id}`}
+                onClick={() => onSelectItem?.({ type: 'task', id: s.id })}
+                disabled={!onSelectItem}
+                className={`flex w-full items-center gap-2 text-sm rounded px-1.5 py-0.5 text-left ${
+                  onSelectItem ? 'hover:bg-surface-high' : 'cursor-default'
+                }`}
+                title={s.title}
+              >
                 <StatusBadge status={s.status} size="sm" />
+                {s.ticket_number && (
+                  <span className="font-mono text-xs text-muted">{s.ticket_number}</span>
+                )}
                 <span className="text-foreground truncate">{s.title}</span>
                 {s.assignee && <span className="text-xs text-muted ml-auto shrink-0">{s.assignee}</span>}
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -186,6 +239,13 @@ export default function UnitDetail({ unitId, onClose }: UnitDetailProps) {
           </div>
         )}
       </div>
+      {editing && (
+        <UnitEditModal
+          unit={unit}
+          onClose={() => setEditing(false)}
+          onUpdated={(next) => setUnit(next)}
+        />
+      )}
     </div>
   );
 }

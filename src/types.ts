@@ -2,6 +2,9 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  /** Ticket prefix (e.g. `LM`, `MP`). Surfaced in TaskCard ticket numbers
+   *  (`<key>-<idx>`). Daemon side: `models::Project::key`. */
+  key: string | null;
   created_at: number;
   updated_at: number;
   cwds: string[];
@@ -19,6 +22,7 @@ export interface Cycle {
   started_at: number | null;
   ended_at: number | null;
   status: 'planning' | 'active' | 'completed';
+  unit_id?: string | null;
 }
 
 export interface Plan {

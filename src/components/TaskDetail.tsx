@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Task, Artifact, Run, Question, TaskComment, Cycle } from '../types';
+import type { Task, Artifact, Run, Question, TaskComment, Cycle, Unit, Plan } from '../types';
 import api from '../api';
 import { Label, Input, Select, Button } from './ui';
 import { TaskComments } from './task-detail/TaskComments';
@@ -10,6 +10,10 @@ import { ArtifactsSection, RunsSection, QuestionsSection } from './task-detail/T
 import EnvelopeForm from './EnvelopeForm';
 import TaskTreeView from './TaskTreeView';
 import TaskBreadcrumb from './TaskBreadcrumb';
+import DetailBreadcrumb, { type DetailBreadcrumbKind } from './DetailBreadcrumb';
+import { TaskEditModal } from './TaskEditModal';
+import { TaskStatusModal } from './TaskStatusModal';
+import StatusBadge from './StatusBadge';
 import SuggestionPanel from '../features/decomposition/SuggestionPanel';
 import TimelineReplay from '../features/timeline/TimelineReplay';
 import RunCompare from '../features/runs/RunCompare';
@@ -37,6 +41,70 @@ function EvidenceValue({ value }: { value: string | null | undefined }) {
     );
   }
   return <span className="text-foreground font-mono break-all">{value}</span>;
+}
+
+/** Dependencies list — resolves depends_on IDs to ticket numbers via api.getTask,
+ *  renders each as a clickable button that fires onSelectTask. Matches desktop
+ *  parity (desktop/apps/desktop/src/shell/DetailPanels.tsx:1489-1521). */
+function DependenciesList({
+  depIds,
+  onSelectTask,
+}: {
+  depIds: string[];
+  onSelectTask?: (id: string) => void;
+}) {
+  const depsKey = depIds.join('|');
+  const [resolved, setResolved] = useState<Map<string, Task>>(new Map());
+  useEffect(() => {
+    if (depIds.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      depIds.map((id) =>
+        api.getTask(id).then(
+          (t) => [id, t] as const,
+          () => [id, null] as const,
+        ),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      const next = new Map<string, Task>();
+      for (const [id, t] of entries) {
+        if (t) next.set(id, t);
+      }
+      setResolved(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [depsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <ul
+      data-testid="task-detail-depends-on"
+      className="flex flex-wrap gap-1.5"
+    >
+      {depIds.map((dep) => {
+        const depTask = resolved.get(dep);
+        const label = depTask?.ticket_number ?? `…${dep.slice(-6)}`;
+        return (
+          <li key={dep}>
+            <button
+              type="button"
+              onClick={() => onSelectTask?.(dep)}
+              disabled={!onSelectTask}
+              title={depTask?.title ?? dep}
+              className={`text-xs font-mono px-2 py-0.5 rounded border border-border bg-surface-high ${
+                onSelectTask
+                  ? 'text-primary hover:bg-primary/10'
+                  : 'text-muted'
+              }`}
+            >
+              {label}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 /** US-CKT-SCHEMA-025 — link from a task's batch_id to other tasks sharing it.
@@ -123,12 +191,14 @@ interface TaskDetailProps {
   /** Open a different task in the side panel — wired by App for the
    *  TaskTreeView's click-to-navigate behavior. */
   onSelectTask?: (id: string) => void;
+  /** Open a Plan/Unit/Task in the side panel — wired for breadcrumb nav (LM-10984). */
+  onSelectItem?: (item: { type: DetailBreadcrumbKind; id: string }) => void;
 }
 
-const STATUS_OPTIONS: Task['status'][] = ['todo', 'in_progress', 'blocked', 'done', 'cancelled'];
-
-export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }: TaskDetailProps) {
+export default function TaskDetail({ taskId, projectId, onClose, onSelectTask, onSelectItem }: TaskDetailProps) {
   const [task, setTask] = useState<Task | null>(null);
+  const [unit, setUnit] = useState<Unit | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -138,6 +208,8 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
   const [titleDraft, setTitleDraft] = useState('');
   const [editingAssignee, setEditingAssignee] = useState(false);
   const [assigneeDraft, setAssigneeDraft] = useState('');
+  const [editingTask, setEditingTask] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [childTasks, setChildTasks] = useState<Task[]>([]);
 
@@ -158,6 +230,27 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
       setQuestions(q);
       setComments(c);
       setChildTasks(ch);
+      // Resolve breadcrumb ancestors (unit → plan). Failures are non-fatal —
+      // the breadcrumb simply collapses to whatever segments resolved.
+      if (s.unit_id) {
+        api
+          .getUnit(s.unit_id)
+          .then((u) => {
+            setUnit(u);
+            if (u.plan_id) {
+              api.getPlan(u.plan_id).then(setPlan).catch(() => setPlan(null));
+            } else {
+              setPlan(null);
+            }
+          })
+          .catch(() => {
+            setUnit(null);
+            setPlan(null);
+          });
+      } else {
+        setUnit(null);
+        setPlan(null);
+      }
     } catch (err) {
       console.error('Failed to load task:', err);
     } finally {
@@ -179,16 +272,6 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
       setTask(updated);
     } catch (err) {
       console.error('Failed to update cycle assignment:', err);
-    }
-  }
-
-  async function handleStatusChange(status: Task['status']) {
-    if (!task) return;
-    try {
-      const updated = await api.updateTask(task.id, { status });
-      setTask(updated);
-    } catch (err) {
-      console.error('Failed to update status:', err);
     }
   }
 
@@ -245,13 +328,48 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <span className="text-xs text-muted font-mono" title={task.id}>...{task.id.slice(-6)}</span>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="task-detail-edit"
+            onClick={() => setEditingTask(true)}
+          >
+            Edit
+          </Button>
           <Button variant="danger" size="sm" onClick={handleDeleteTask}>Delete</Button>
           <button onClick={onClose} className="text-muted hover:text-foreground text-lg leading-none">&times;</button>
         </div>
       </div>
 
       <div className="p-4 space-y-5">
-        {/* LM-88 — breadcrumb + children navigation */}
+        {/* Entity breadcrumb (LM-10984): Plan → Unit → Task */}
+        <DetailBreadcrumb
+          items={[
+            ...(plan
+              ? [
+                  {
+                    type: 'plan' as const,
+                    id: plan.id,
+                    label: plan.title,
+                    status: plan.status,
+                  },
+                ]
+              : []),
+            ...(unit
+              ? [{ type: 'unit' as const, id: unit.id, label: unit.title }]
+              : []),
+            {
+              type: 'task',
+              id: task.id,
+              label: task.title,
+              ticket: task.ticket_number,
+              status: task.status,
+            },
+          ]}
+          onSelectItem={onSelectItem}
+        />
+
+        {/* LM-88 — task ancestor/children navigation */}
         <TaskBreadcrumb task={task} onSelectTask={onSelectTask} />
 
         {/* Title */}
@@ -302,17 +420,15 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
         <div className="flex gap-4">
           <div className="flex-1">
             <Label>Status</Label>
-            <Select
-              value={task.status}
-              onChange={(e) => handleStatusChange(e.target.value as Task['status'])}
-              size="sm"
+            <button
+              type="button"
+              data-testid="task-detail-status-change"
+              onClick={() => setChangingStatus(true)}
+              className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm cursor-pointer hover:border-primary transition-colors min-h-[34px] flex items-center gap-2"
             >
-              {STATUS_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {s.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                </option>
-              ))}
-            </Select>
+              <StatusBadge status={task.status} size="sm" />
+              <span className="text-muted text-xs ml-auto">Change…</span>
+            </button>
           </div>
           <div className="flex-1">
             <Label>Assignee</Label>
@@ -403,13 +519,10 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
         {(task.depends_on || []).length > 0 && (
           <div>
             <Label>Dependencies</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {(task.depends_on || []).map((dep) => (
-                <span key={dep} className="text-xs font-mono bg-border/50 text-muted px-2 py-0.5 rounded" title={dep}>
-                  ...{dep.slice(-6)}
-                </span>
-              ))}
-            </div>
+            <DependenciesList
+              depIds={task.depends_on || []}
+              onSelectTask={onSelectTask}
+            />
           </div>
         )}
 
@@ -464,10 +577,24 @@ export default function TaskDetail({ taskId, projectId, onClose, onSelectTask }:
 
         <TaskSubTasks task={task} childTasks={childTasks} onChildCreated={(child) => setChildTasks(prev => [...prev, child])} />
         <ArtifactsSection artifacts={artifacts} />
-        <RunsSection runs={runs} />
         <QuestionsSection questions={questions} />
         <TaskComments taskId={taskId} comments={comments} onCommentsChange={setComments} />
+        <RunsSection runs={runs} />
       </div>
+      {editingTask && (
+        <TaskEditModal
+          task={task}
+          onClose={() => setEditingTask(false)}
+          onUpdated={(next) => setTask(next)}
+        />
+      )}
+      {changingStatus && (
+        <TaskStatusModal
+          task={task}
+          onClose={() => setChangingStatus(false)}
+          onUpdated={(next) => setTask(next)}
+        />
+      )}
     </div>
   );
 }

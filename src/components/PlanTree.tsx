@@ -37,6 +37,18 @@ const taskStatusIcon: Record<Task['status'], { icon: string; color: string }> = 
   cancelled: { icon: '\u2715', color: 'text-muted' },
 };
 
+const PLAN_STATUS_ACCENT: Record<Plan['status'], string> = {
+  draft: 'border-l-2 border-l-border',
+  active: 'border-l-2 border-l-primary',
+  completed: 'border-l-2 border-l-success/40',
+};
+
+const PLAN_STATUS_TINT: Record<Plan['status'], string> = {
+  draft: '',
+  active: '',
+  completed: 'opacity-70',
+};
+
 const priorityDotColor: Record<Task['priority'], string> = {
   critical: 'bg-danger',
   high: 'bg-warning',
@@ -117,10 +129,9 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
         );
         if (!cancelled) {
           setPlans(enriched);
-          // Auto-expand all plans on first load
           if (refreshCounter === 0) {
-            setExpandedPlans(new Set(enriched.map((p) => p.id)));
-            setExpandedUnits(new Set(enriched.flatMap((p) => p.units.map((u) => u.id))));
+            const activePlanIds = enriched.filter((p) => p.status === 'active').map((p) => p.id);
+            setExpandedPlans(new Set(activePlanIds));
           }
         }
       } catch (err) {
@@ -178,7 +189,6 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
       });
       return anyChanged ? next : prevPlans;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskPatches]);
 
   // Fetch cycles when entering edit mode
@@ -268,11 +278,16 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
 
   if (plans.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted">
+      <div
+        data-testid="sidebar-plans-empty"
+        className="flex-1 flex items-center justify-center text-muted"
+      >
         <div className="text-center">
           <div className="text-lg mb-1">No plans yet</div>
           <div className="text-sm mb-3">Create a plan to get started</div>
           <button
+            type="button"
+            data-testid="sidebar-empty-new-plan"
             onClick={onCreatePlan}
             className="text-sm text-primary hover:text-primary/80 font-medium"
           >
@@ -288,7 +303,12 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
       <div className="flex-shrink-0 px-4 py-3 border-b border-border flex items-center justify-between">
         <h2 className="text-lg font-semibold text-foreground">Plans</h2>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted">{plans.length} plans</span>
+          <span
+            data-testid="sidebar-plan-count"
+            className="text-xs text-muted"
+          >
+            {plans.length} plans
+          </span>
           {editMode ? (
             <Button variant="outline" size="sm" onClick={exitEditMode}>
               Done
@@ -300,6 +320,8 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
           )}
           {!editMode && (
             <button
+              type="button"
+              data-testid="sidebar-new-plan"
               onClick={onCreatePlan}
               className="text-xs text-primary hover:text-primary/80 font-medium"
               title="New plan"
@@ -314,7 +336,9 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
         <div key={plan.id} className="mb-1">
           {/* Plan row */}
           <div
-            className={`flex items-center gap-2 px-4 py-2 cursor-pointer hover:bg-surface-hover transition-colors ${
+            title={plan.id}
+            data-plan-status={plan.status}
+            className={`flex items-center gap-2 px-4 py-2 cursor-pointer hover:bg-surface-hover transition-colors ${PLAN_STATUS_ACCENT[plan.status]} ${PLAN_STATUS_TINT[plan.status]} ${
               selectedItem?.type === 'plan' && selectedItem.id === plan.id ? 'bg-primary/10' : ''
             }`}
           >
@@ -383,6 +407,7 @@ export default function PlanTree({ projectId, selectedItem, onSelectItem, onCrea
                 <div key={unit.id}>
                   {/* Unit row */}
                   <div
+                    title={unit.id}
                     className={`flex items-center gap-2 px-4 py-1.5 pl-10 cursor-pointer hover:bg-surface-hover transition-colors ${
                       selectedItem?.type === 'unit' && selectedItem.id === unit.id ? 'bg-primary/10' : ''
                     }`}

@@ -1,30 +1,32 @@
 import { useState, useEffect, useCallback, useRef, useReducer, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import type { Project, Task, Plan, Cycle } from './types';
+import type { Project, Task, Plan } from './types';
 import api from './api';
 import Sidebar from './components/Sidebar';
-import PlanTree from './components/PlanTree';
+import { AppShell } from './components/shell/AppShell';
 import TaskDetail from './components/TaskDetail';
 import UnitDetail from './components/UnitDetail';
 import PlanDetail from './components/PlanDetail';
 import CreateUnitModal from './components/CreateUnitModal';
 import CreateTaskModal from './components/CreateTaskModal';
 import CreatePlanModal from './components/CreatePlanModal';
+import ProjectCreateModal from './components/ProjectCreateModal';
 import BoardView from './components/BoardView';
 import BacklogView from './components/BacklogView';
 import SummaryView from './components/SummaryView';
 import TimelineView from './components/TimelineView';
 import WikiView from './components/WikiView';
-import Header from './components/Header';
+import { Topbar } from './components/shell/Topbar';
+import CommandPalette, { type CommandItem } from './components/CommandPalette';
 import HelpModal from './components/HelpModal';
 import ToastContainer from './components/Toast';
 import { useDaemonHealth } from './hooks/useDaemonHealth';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
-import { initTheme } from './lib/theme';
+import { initTheme, getStoredTheme, setTheme, getCurrentEffectiveTheme, type Theme } from './lib/theme';
 import { toastError, toastSuccess } from './lib/toast';
 import { daemonUrl } from './lib/daemonUrl';
 
-type ViewType = 'summary' | 'plans' | 'board' | 'backlog' | 'timeline' | 'wiki';
+type ViewType = 'summary' | 'board' | 'backlog' | 'timeline' | 'wiki';
 type SelectedItem =
   | { type: 'plan'; id: string }
   | { type: 'unit'; id: string }
@@ -37,7 +39,7 @@ type SelectedItem =
  */
 function parseLocation(pathname: string): { projectId: string | null; view: ViewType; item: SelectedItem | null } {
   const parts = pathname.split('/').filter(Boolean);
-  const VIEWS = new Set<ViewType>(['summary', 'plans', 'board', 'backlog', 'timeline', 'wiki']);
+  const VIEWS = new Set<ViewType>(['summary', 'board', 'backlog', 'timeline', 'wiki']);
 
   // Check if first part is a project ID (starts with PROJ-)
   let projectId: string | null = null;
@@ -210,10 +212,22 @@ function App() {
     }
   }, [navigate, activeView, urlPrefix]);
 
-  // Redirect root to /summary (or /:projectId/summary)
+  // Redirect root to /summary (or /:projectId/summary), and legacy /plans → /summary
+  // (Plans view was promoted to the sidebar PlanTree in U3-T1; the URL segment is
+  // preserved as a back-compat shim so bookmarks and the SSE-restored "last view"
+  // localStorage value don't 404. Task/unit/plan drawer ids in the path tail
+  // are preserved.)
   useEffect(() => {
     if (location.pathname === '/') {
       navigate('/summary', { replace: true });
+      return;
+    }
+    const parts = location.pathname.split('/').filter(Boolean);
+    const viewIdx = parts[0]?.startsWith('PROJ-') ? 1 : 0;
+    if (parts[viewIdx] === 'plans') {
+      const rewritten = [...parts];
+      rewritten[viewIdx] = 'summary';
+      navigate('/' + rewritten.join('/'), { replace: true });
     }
   }, [location.pathname, navigate]);
 
@@ -256,6 +270,7 @@ function App() {
   const [createPlanForProject, setCreatePlanForProject] = useState<string | null>(null);
   const [createUnitForPlan, setCreateUnitForPlan] = useState<string | null>(null);
   const [createTaskForUnit, setCreateTaskForUnit] = useState<string | null>(null);
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -426,36 +441,6 @@ function App() {
     },
   });
 
-  // ---- Active plan + cycle for header badge (US-CLAWKET-WEB-NAV-009) -------
-  // We fetch the per-project active plan and active cycle so the header can
-  // surface "PLAN xxx · cycle 2 (round 1)". A structural SSE refresh re-fires
-  // this effect via `treeKey`. Cheap because both endpoints filter server-side.
-  const [activePlan, setActivePlan] = useState<Plan | null>(null);
-  const [activeCycle, setActiveCycle] = useState<Cycle | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!selectedProjectId) {
-      setActivePlan(null);
-      setActiveCycle(null);
-      return;
-    }
-    Promise.all([
-      api.listPlans({ project_id: selectedProjectId, status: 'active' }).catch(() => [] as Plan[]),
-      api.listCycles({ project_id: selectedProjectId, status: 'active' }).catch(() => [] as Cycle[]),
-    ]).then(([plans, cycles]) => {
-      if (cancelled) return;
-      setActivePlan(plans[0] ?? null);
-      setActiveCycle(cycles[0] ?? null);
-    });
-    return () => { cancelled = true; };
-  }, [selectedProjectId, treeKey]);
-
-  const selectedProject = useMemo(
-    () => projects.find(p => p.id === selectedProjectId) ?? null,
-    [projects, selectedProjectId],
-  );
-
   // Daemon "lagging" detection — flag the connection as stale when neither
   // a domain event nor a keepalive `ping` has arrived recently. Daemon
   // keepalive cadence is 30s (events.rs KeepAlive::interval), so the
@@ -493,7 +478,11 @@ function App() {
   function handleProjectCreated(project: Project) {
     setProjects((prev) => [...prev, project]);
     setSelectedProjectId(project.id);
-    setSelectedItem(null);
+    navigate(`/${project.id}/${activeView}`);
+  }
+
+  function handleProjectUpdated(project: Project) {
+    setProjects((prev) => prev.map((p) => (p.id === project.id ? project : p)));
   }
 
   function handleCreated() {
@@ -506,7 +495,7 @@ function App() {
   }, [reconnectDaemon, connectSse]);
 
   // ---- Global keyboard shortcuts (US-CLAWKET-WEB-KEY-001 / KEY-002) -------
-  // Cmd/Ctrl+K → command palette (controlled by Header).
+  // Cmd/Ctrl+K → command palette.
   // ?           → HelpModal cheatsheet.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -514,40 +503,120 @@ function App() {
   const openHelp = useCallback(() => setHelpOpen(true), []);
   useGlobalShortcuts({ onPalette: togglePalette, onHelp: openHelp });
 
+  // Command palette built-in commands. Theme cycling is the single built-in
+  // shipped with v3 (US-CLAWKET-WEB-KEY-001); domain commands are layered on
+  // by view-specific components via extraCommands once that wiring lands.
+  const [themePref, setThemePref] = useState<Theme>(getStoredTheme);
+  useEffect(() => {
+    const update = () => setThemePref(getStoredTheme());
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', update);
+    window.addEventListener('storage', update);
+    return () => {
+      mq.removeEventListener('change', update);
+      window.removeEventListener('storage', update);
+    };
+  }, []);
+  const cycleTheme = useCallback(() => {
+    const order: Theme[] = ['system', 'dark', 'light'];
+    const next = order[(order.indexOf(themePref) + 1) % order.length];
+    setTheme(next);
+    setThemePref(next);
+  }, [themePref]);
+  // Plans for the currently selected project — surfaced as palette nav targets.
+  // Refreshed on project change and on SSE structural events (plan:created /
+  // updated / deleted) so the palette never advertises stale entries.
+  const [palettePlans, setPalettePlans] = useState<Plan[]>([]);
+  useEffect(() => {
+    if (!selectedProjectId) { setPalettePlans([]); return; }
+    let cancelled = false;
+    api.listPlans({ project_id: selectedProjectId })
+      .then((plans) => { if (!cancelled) setPalettePlans(plans); })
+      .catch(() => { if (!cancelled) setPalettePlans([]); });
+    return () => { cancelled = true; };
+  }, [selectedProjectId, sseState.structuralSeq]);
+
+  const goToView = useCallback((view: ViewType) => {
+    navigate(`${urlPrefix}/${view}`);
+  }, [navigate, urlPrefix]);
+  const goToPlan = useCallback((planId: string) => {
+    navigate(`${urlPrefix}/${activeView}/plan/${planId}`);
+  }, [navigate, urlPrefix, activeView]);
+
+  const builtinCommands: CommandItem[] = useMemo(() => {
+    const effective = getCurrentEffectiveTheme();
+    const views: Array<{ id: ViewType; label: string; icon: string }> = [
+      { id: 'summary',  label: 'Go to Summary',  icon: '◇' },
+      { id: 'board',    label: 'Go to Board',    icon: '▦' },
+      { id: 'backlog',  label: 'Go to Backlog',  icon: '☰' },
+      { id: 'timeline', label: 'Go to Timeline', icon: '⌚' },
+      { id: 'wiki',     label: 'Go to Wiki',     icon: '📖' },
+    ];
+    const viewCommands: CommandItem[] = views.map((v) => ({
+      id: `view-${v.id}`,
+      label: v.label,
+      description: v.id === activeView ? 'Current view' : undefined,
+      icon: v.icon,
+      action: () => goToView(v.id),
+    }));
+    const planCommands: CommandItem[] = palettePlans.map((p) => ({
+      id: `plan-${p.id}`,
+      label: `Open plan: ${p.title}`,
+      description: p.status === 'active' ? 'Active' : p.status,
+      icon: '◎',
+      action: () => goToPlan(p.id),
+    }));
+    return [
+      {
+        id: 'theme-cycle',
+        label: 'Toggle theme',
+        description: `Current: ${themePref} (${effective})`,
+        icon: effective === 'dark' ? '◑' : '○',
+        action: cycleTheme,
+      },
+      ...viewCommands,
+      ...planCommands,
+    ];
+  }, [themePref, cycleTheme, activeView, goToView, palettePlans, goToPlan]);
+
+  // Daemon-ok pill in Topbar reflects both HTTP health and SSE liveness.
+  const daemonHealthy = daemonConnected && sseStatus === 'connected' && !lagging;
+
   return (
-    <div className="flex flex-col h-full bg-background">
-      {/* Global header (FIX-WEB-001 + WEB-HEADER-V3) */}
-      <Header
-        daemonConnected={daemonConnected}
-        sseStatus={sseStatus}
-        lagging={lagging}
-        onReconnect={handleReconnect}
-        activeProject={selectedProject}
-        activePlan={activePlan}
-        activeCycle={activeCycle}
-        paletteOpen={paletteOpen}
-        onPaletteOpenChange={setPaletteOpen}
+    <AppShell.Root>
+      <Sidebar
+        projects={projects}
+        selectedId={selectedProjectId}
+        onSelect={handleSelectProject}
+        onOpenProjectCreate={() => setProjectCreateOpen(true)}
+        onProjectUpdated={handleProjectUpdated}
+        refreshKey={sseState.structuralSeq}
+        selectedItem={selectedItem}
+        onSelectItem={setSelectedItem}
+        onCreatePlan={() => {
+          if (selectedProjectId) setCreatePlanForProject(selectedProjectId);
+        }}
+        onCreateUnit={setCreateUnitForPlan}
+        onCreateTask={setCreateTaskForUnit}
+        taskPatches={sseState.taskPatches}
       />
 
-      <div className="flex flex-1 min-h-0">
-        {/* Left sidebar */}
-        <Sidebar
-          projects={projects}
-          selectedId={selectedProjectId}
-          onSelect={handleSelectProject}
-          onProjectCreated={handleProjectCreated}
+      {/* Content column = topbar + main view */}
+      <AppShell.Content>
+        <Topbar
           activeView={activeView}
           onViewChange={setActiveView}
+          onOpenPalette={togglePalette}
+          daemonHealthy={daemonHealthy}
+          onReconnect={handleReconnect}
         />
-
-        {/* Main content */}
-        <main className="flex-1 flex flex-col min-w-0">
+        <AppShell.Main>
           {/* US-CLAWKET-WEB-EMPTY-004 — daemon down: replace blank canvas
-              with an explanatory empty state + reconnect CTA. We keep the
-              header (it has its own indicator) but hide the views that would
-              otherwise render with stale data. */}
+              with an explanatory empty state + reconnect CTA. Topbar's
+              daemon-down pill stays visible so the reconnect signal is
+              always present. */}
           {!daemonConnected ? (
-            <div className="flex-1 flex items-center justify-center">
+            <div className="h-full flex items-center justify-center">
               <div className="max-w-sm text-center px-6">
                 <div className="text-3xl mb-3" aria-hidden="true">⚠</div>
                 <h2 className="text-base font-semibold text-foreground mb-2">
@@ -585,18 +654,6 @@ function App() {
                   onSelectTask={(id) => setSelectedItem({ type: 'task', id })}
                 />
               )}
-              {activeView === 'plans' && (
-                <PlanTree
-                  key={`plans-${selectedProjectId}-${treeKey}`}
-                  projectId={selectedProjectId}
-                  selectedItem={selectedItem}
-                  onSelectItem={setSelectedItem}
-                  onCreatePlan={() => setCreatePlanForProject(selectedProjectId)}
-                  onCreateUnit={setCreateUnitForPlan}
-                  onCreateTask={setCreateTaskForUnit}
-                  taskPatches={sseState.taskPatches}
-                />
-              )}
               {activeView === 'board' && (
                 <BoardView
                   // US-CLAWKET-WEB-CNT-003: re-render on every task patch so
@@ -631,51 +688,60 @@ function App() {
               )}
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted">
+            <div className="h-full flex items-center justify-center text-muted">
               <div className="text-center">
                 <div className="text-2xl mb-2">Clawket</div>
                 <div className="text-sm">Select a project to get started</div>
               </div>
             </div>
           )}
-        </main>
+        </AppShell.Main>
+      </AppShell.Content>
 
-        {/* Detail drawer (overlay) */}
-        {selectedItem && (
-          <>
+      {/* Detail drawer (overlay) */}
+      {selectedItem && (
+        <>
+          <div
+            className="fixed inset-0 bg-overlay z-40 transition-opacity"
+            onClick={() => setSelectedItem(null)}
+          />
+          <div
+            className="fixed top-0 right-0 h-full max-w-[90vw] z-50 shadow-2xl border-l border-border animate-slide-in flex"
+            style={{ width: `${drawerWidth}px` }}
+          >
+            {/* Resize handle */}
             <div
-              className="fixed inset-0 bg-overlay z-40 transition-opacity"
-              onClick={() => setSelectedItem(null)}
+              className="w-1 hover:w-1.5 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
+              onMouseDown={startResize}
             />
-            <div
-              className="fixed top-0 right-0 h-full max-w-[90vw] z-50 shadow-2xl border-l border-border animate-slide-in flex"
-              style={{ width: `${drawerWidth}px` }}
-            >
-              {/* Resize handle */}
-              <div
-                className="w-1 hover:w-1.5 cursor-col-resize bg-transparent hover:bg-primary/30 transition-colors shrink-0"
-                onMouseDown={startResize}
-              />
-              <div className="flex-1 min-w-0 h-full overflow-hidden">
-                {selectedItem.type === 'task' && (
-                  <TaskDetail
-                    taskId={selectedItem.id}
-                    projectId={selectedProjectId ?? undefined}
-                    onClose={() => setSelectedItem(null)}
-                    onSelectTask={(id) => setSelectedItem({ type: 'task', id })}
-                  />
-                )}
-                {selectedItem.type === 'unit' && (
-                  <UnitDetail unitId={selectedItem.id} onClose={() => setSelectedItem(null)} />
-                )}
-                {selectedItem.type === 'plan' && (
-                  <PlanDetail planId={selectedItem.id} onClose={() => setSelectedItem(null)} />
-                )}
-              </div>
+            <div className="flex-1 min-w-0 h-full overflow-hidden">
+              {selectedItem.type === 'task' && (
+                <TaskDetail
+                  taskId={selectedItem.id}
+                  projectId={selectedProjectId ?? undefined}
+                  onClose={() => setSelectedItem(null)}
+                  onSelectTask={(id) => setSelectedItem({ type: 'task', id })}
+                  onSelectItem={(item) => setSelectedItem(item)}
+                />
+              )}
+              {selectedItem.type === 'unit' && (
+                <UnitDetail
+                  unitId={selectedItem.id}
+                  onClose={() => setSelectedItem(null)}
+                  onSelectItem={(item) => setSelectedItem(item)}
+                />
+              )}
+              {selectedItem.type === 'plan' && (
+                <PlanDetail
+                  planId={selectedItem.id}
+                  onClose={() => setSelectedItem(null)}
+                  onSelectItem={(item) => setSelectedItem(item)}
+                />
+              )}
             </div>
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
 
       {/* Modals */}
       {createPlanForProject && (
@@ -699,13 +765,26 @@ function App() {
           onCreated={handleCreated}
         />
       )}
+      {projectCreateOpen && (
+        <ProjectCreateModal
+          onClose={() => setProjectCreateOpen(false)}
+          onCreated={handleProjectCreated}
+        />
+      )}
 
       {/* Global toast container (FIX-WEB-001) */}
       <ToastContainer />
 
       {/* US-CLAWKET-WEB-KEY-001 — global help cheatsheet (toggled by '?'). */}
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
-    </div>
+
+      {/* Command palette (Cmd+K) — global modal, mounted at root */}
+      <CommandPalette
+        commands={builtinCommands}
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
+    </AppShell.Root>
   );
 }
 

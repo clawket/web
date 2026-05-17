@@ -17,11 +17,35 @@ export default function CreateTaskModal({ unitId, onClose, onCreated }: CreateTa
   const [submitting, setSubmitting] = useState(false);
   const [agents, setAgents] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<Task[]>([]);
+  const [cycleId, setCycleId] = useState<string | null>(null);
+  const [cycleError, setCycleError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
-    fetch('/agents').then(r => r.json()).then(setAgents).catch(() => {});
+    api.listAgents().then(setAgents).catch(() => {});
   }, []);
+
+  // Daemon API-TASK-001 requires explicit cycle_id on task creation; resolve
+  // the active cycle for this unit before the user can submit.
+  useEffect(() => {
+    let cancelled = false;
+    api.listCycles({ unit_id: unitId, status: 'active' })
+      .then((cycles) => {
+        if (cancelled) return;
+        const active = cycles[0];
+        if (active) {
+          setCycleId(active.id);
+          setCycleError(null);
+        } else {
+          setCycleError('No active cycle for this unit. Activate a cycle first.');
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCycleError(err instanceof Error ? err.message : 'Failed to load active cycle');
+      });
+    return () => { cancelled = true; };
+  }, [unitId]);
 
   // Debounced duplicate check on title change
   useEffect(() => {
@@ -39,11 +63,12 @@ export default function CreateTaskModal({ unitId, onClose, onCreated }: CreateTa
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !cycleId) return;
     setSubmitting(true);
     try {
       await api.createTask({
         unit_id: unitId,
+        cycle_id: cycleId,
         title: title.trim(),
         body: body.trim(),
         idx,
@@ -131,6 +156,14 @@ export default function CreateTaskModal({ unitId, onClose, onCreated }: CreateTa
                 />
               </div>
             </div>
+            {cycleError && (
+              <div
+                className="p-2 rounded border border-danger/30 bg-danger/5 text-xs text-danger"
+                data-testid="task-create-cycle-error"
+              >
+                {cycleError}
+              </div>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" size="md" onClick={onClose}>
                 Cancel
@@ -139,7 +172,7 @@ export default function CreateTaskModal({ unitId, onClose, onCreated }: CreateTa
                 type="submit"
                 variant="primary"
                 size="md"
-                disabled={!title.trim() || submitting}
+                disabled={!title.trim() || !cycleId || submitting}
               >
                 {submitting ? 'Creating...' : 'Create Task'}
               </Button>

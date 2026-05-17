@@ -47,9 +47,11 @@ export function TaskComments({
   }, [comments, onCommentsChange]);
 
   return (
-    <div>
+    <div data-testid="task-detail-comments">
       <Label>Comments ({comments.length})</Label>
-      {comments.length > 0 && (
+      {comments.length === 0 ? (
+        <div className="text-sm text-muted italic mb-3">No comments yet</div>
+      ) : (
         <div className="space-y-2 mb-3">
           {comments.map((c) => (
             <div key={c.id} className="bg-background border border-border rounded p-3">
@@ -58,18 +60,45 @@ export function TaskComments({
                   <span className="text-xs font-medium text-foreground">{c.author}</span>
                   <span className="text-xs text-muted">{formatTime(c.created_at)}</span>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => handleDelete(c.id)} title="Delete comment">&times;</Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid={`task-detail-comment-delete-${c.id}`}
+                  onClick={() => handleDelete(c.id)}
+                  title="Delete comment"
+                >
+                  &times;
+                </Button>
               </div>
-              <div className="text-sm text-foreground">{c.body}</div>
+              <div className="text-sm text-foreground whitespace-pre-wrap">{c.body}</div>
             </div>
           ))}
         </div>
       )}
       <div className="bg-background border border-border rounded p-3 space-y-2">
-        <Input value={commentAuthor} onChange={(e) => setCommentAuthor(e.target.value)} placeholder="Author" size="sm" />
-        <Textarea value={commentBody} onChange={(e) => setCommentBody(e.target.value)} placeholder="Write a comment..." rows={3} size="sm" />
+        <Input
+          value={commentAuthor}
+          onChange={(e) => setCommentAuthor(e.target.value)}
+          placeholder="Author"
+          size="sm"
+          data-testid="task-detail-comment-author"
+        />
+        <Textarea
+          value={commentBody}
+          onChange={(e) => setCommentBody(e.target.value)}
+          placeholder="Write a comment..."
+          rows={3}
+          size="sm"
+          data-testid="task-detail-comment-body"
+        />
         <div className="flex justify-end">
-          <Button variant="secondary" size="sm" onClick={handleAdd} disabled={submitting || !commentAuthor.trim() || !commentBody.trim()}>
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="task-detail-comment-submit"
+            onClick={handleAdd}
+            disabled={submitting || !commentAuthor.trim() || !commentBody.trim()}
+          >
             {submitting ? 'Posting...' : 'Add Comment'}
           </Button>
         </div>

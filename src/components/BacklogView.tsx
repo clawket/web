@@ -84,7 +84,7 @@ export default function BacklogView({ projectId, onSelectTask }: BacklogViewProp
 
   async function handleUnassign(taskId: string) {
     try {
-      await api.updateTask(taskId, { cycle_id: null as unknown as string });
+      await api.updateTask(taskId, { cycle_id: null });
       load();
     } catch (err) {
       console.error('Failed to unassign task:', err);
@@ -143,7 +143,7 @@ export default function BacklogView({ projectId, onSelectTask }: BacklogViewProp
       // Move to backlog (unassign)
       if (!currentCycleId) return; // already in backlog
       try {
-        await api.updateTask(taskId, { cycle_id: null as unknown as string });
+        await api.updateTask(taskId, { cycle_id: null });
         await load();
       } catch (err) {
         console.error('Failed to move task to backlog:', err);

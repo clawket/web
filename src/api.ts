@@ -25,13 +25,22 @@ class ApiError extends Error {
   status: number;
   statusText: string;
   body: unknown;
+  code: string | null;
 
   constructor(status: number, statusText: string, body: unknown) {
-    super(`API ${status} ${statusText}`);
+    const daemonMsg =
+      body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
+        ? (body as { error: string }).error
+        : null;
+    super(daemonMsg ?? `API ${status} ${statusText}`);
     this.name = 'ApiError';
     this.status = status;
     this.statusText = statusText;
     this.body = body;
+    this.code =
+      body && typeof body === 'object' && 'code' in body && typeof (body as { code: unknown }).code === 'string'
+        ? (body as { code: string }).code
+        : null;
   }
 }
 
@@ -108,17 +117,51 @@ export function getProject(id: string): Promise<Project> {
   return get(`/projects/${encodeURIComponent(id)}`);
 }
 
-export function createProject(data: {
+export interface CreateProjectInput {
   name: string;
-  description?: string;
-  cwd?: string;
-}): Promise<Project> {
-  return post('/projects', data);
+  description?: string | null;
+  key?: string | null;
+  wiki_paths?: string[];
+  cwds?: string[];
+}
+
+export async function createProject(input: CreateProjectInput): Promise<Project> {
+  const body: Record<string, unknown> = { name: input.name };
+  if (input.description !== undefined && input.description !== null) {
+    body.description = input.description;
+  }
+  if (input.key !== undefined && input.key !== null) body.key = input.key;
+  if (input.cwds && input.cwds.length > 0) body.cwd = input.cwds[0];
+  const created = await post<Project>('/projects', body);
+
+  let final: Project = created;
+  if (input.wiki_paths !== undefined) {
+    final = await updateProject(created.id, { wiki_paths: input.wiki_paths });
+  }
+  if (input.cwds && input.cwds.length > 1) {
+    for (const extra of input.cwds.slice(1)) {
+      final = await addProjectCwd(created.id, extra);
+    }
+  }
+  return final;
+}
+
+/** Daemon PATCH /projects/:id contract. Mirrors
+ *  `daemon::repo::projects::UpdateProjectPatch` (snake_case wire keys).
+ *  Three-state encoding for nullable fields: `undefined` = omit,
+ *  `null` = clear, string = set. */
+export interface UpdateProjectPatch {
+  name?: string;
+  description?: string | null;
+  key?: string | null;
+  cwds?: string[];
+  enabled?: number;
+  wiki_paths?: string[];
 }
 
 export function updateProject(
   id: string,
-  data: Partial<Pick<Project, 'name' | 'description' | 'cwds' | 'enabled' | 'wiki_paths'>>,
+  data: UpdateProjectPatch,
 ): Promise<Project> {
   return patch(`/projects/${encodeURIComponent(id)}`, data);
 }
@@ -207,6 +250,7 @@ export async function getPlanCounts(planId: string): Promise<Record<string, Unit
 
 export function listCycles(params?: {
   project_id?: string;
+  unit_id?: string;
   status?: string;
 }): Promise<Cycle[]> {
   return get(`/cycles${qs(params)}`);
@@ -218,6 +262,7 @@ export function getCycle(id: string): Promise<Cycle> {
 
 export function createCycle(data: {
   project_id: string;
+  unit_id: string;
   title: string;
   goal?: string;
   idx?: number;
@@ -308,6 +353,7 @@ export function getTask(id: string): Promise<Task> {
 
 export function createTask(data: {
   unit_id: string;
+  cycle_id: string;
   idx: number;
   title: string;
   body: string;
@@ -318,10 +364,36 @@ export function createTask(data: {
   return post('/tasks', data);
 }
 
-export function updateTask(
-  id: string,
-  data: Partial<Pick<Task, 'title' | 'body' | 'status' | 'assignee' | 'depends_on' | 'cycle_id' | 'unit_id'>>,
-): Promise<Task> {
+export function listAgents(): Promise<string[]> {
+  return get('/agents');
+}
+
+
+/** PATCH /tasks/:id wire shape. Matches daemon JSON contract directly (snake_case).
+ *  Three-state nullable fields (`body`, `assignee`, `cycle_id`, `parent_task_id`,
+ *  `estimated_edits`, `evidence`) use the omit/null/string convention — `null`
+ *  clears the column; omission leaves it untouched.
+ *  `status: 'done'` is gated by daemon's EVIDENCE_REQUIRED check — callers
+ *  must include a non-empty `evidence` in the same patch. */
+export interface UpdateTaskPatch {
+  title?: string;
+  body?: string | null;
+  status?: Task['status'];
+  priority?: Task['priority'];
+  assignee?: string | null;
+  tier?: 'low' | 'med' | 'high';
+  labels?: string[];
+  evidence?: string | null;
+  estimated_edits?: number | null;
+  parent_task_id?: string | null;
+  unit_id?: string;
+  cycle_id?: string | null;
+  depends_on?: string[];
+  /** Sidecar audit comment attached to this PATCH (daemon's `_comment`). */
+  _comment?: string;
+}
+
+export function updateTask(id: string, data: UpdateTaskPatch): Promise<Task> {
   return patch(`/tasks/${encodeURIComponent(id)}`, data);
 }
 
@@ -414,21 +486,34 @@ export function decomposeTask(
   );
 }
 
+/** Subtask create payload — POST /tasks/:parent/subtasks. The daemon
+ *  inherits `unit_id` / `cycle_id` from the parent if omitted; the child's
+ *  `parent_task_id` is fixed by the path. `envelope_overrides` lets
+ *  SuggestionPanel-style flows seed the child's envelope. */
+export interface CreateSubtaskInput {
+  title: string;
+  body?: string;
+  idx?: number;
+  priority?: Task['priority'];
+  type?: Task['type'];
+  assignee?: string;
+  unit_id?: string;
+  cycle_id?: string;
+  envelope_overrides?: EnvelopeJson;
+}
+
 /** Create a child task under `parentId`. Inherits envelope from the
- *  parent unless overrides are supplied. Used by the SuggestionPanel
- *  to materialize accepted suggestions. */
-export function createSubtask(
+ *  parent unless overrides are supplied. The daemon returns either the bare
+ *  Task or `{ task: Task }`; we normalize to Task. */
+export async function createSubtask(
   parentId: string,
-  body: {
-    title: string;
-    body?: string;
-    idx?: number;
-    priority?: Task['priority'];
-    type?: Task['type'];
-    envelope_overrides?: EnvelopeJson;
-  },
-): Promise<{ task: Task } | Task> {
-  return post(`/tasks/${encodeURIComponent(parentId)}/subtasks`, body);
+  input: CreateSubtaskInput,
+): Promise<Task> {
+  const raw = await post<Task | { task: Task }>(
+    `/tasks/${encodeURIComponent(parentId)}/subtasks`,
+    input,
+  );
+  return 'task' in raw ? raw.task : raw;
 }
 
 /** Subtree rooted at `id` in pre-order (DFS by default, BFS via
@@ -738,6 +823,7 @@ const api = {
   listChildTasks,
   getTask,
   createTask,
+  createSubtask,
   updateTask,
   deleteTask,
   bulkUpdateTasks,
@@ -782,8 +868,8 @@ const api = {
   getTaskDescendants,
   getEnvelopeHistory,
   decomposeTask,
-  createSubtask,
   getPlanCounts,
+  listAgents,
 } as const;
 
 export default api;
