@@ -6,8 +6,7 @@
 @source "../components";
 
 @theme {
-  /* ─── Semantic → Tailwind mapping ─── */
-  /* Background */
+  /* ─── Semantic → Tailwind colors ─── */
   --color-background: var(--color-background);
   --color-surface-low: var(--color-surface-low);
   --color-surface: var(--color-surface);
@@ -15,75 +14,132 @@
   --color-surface-hover: var(--color-surface-hover);
   --color-overlay: var(--color-overlay);
 
-  /* Foreground */
   --color-foreground: var(--color-foreground);
   --color-muted: var(--color-foreground-muted);
+  --color-subtle: var(--color-foreground-subtle);
 
-  /* Border */
   --color-border: var(--color-border);
+  --color-border-muted: var(--color-border-muted);
 
-  /* Primary */
   --color-primary: var(--color-primary);
   --color-primary-hover: var(--color-primary-hover);
   --color-primary-foreground: var(--color-primary-foreground);
+  --color-on-primary: var(--color-primary-foreground);
 
-  /* Success */
   --color-success: var(--color-success);
   --color-success-foreground: var(--color-success-foreground);
 
-  /* Warning */
   --color-warning: var(--color-warning);
   --color-warning-foreground: var(--color-warning-foreground);
 
-  /* Danger */
   --color-danger: var(--color-danger);
   --color-danger-foreground: var(--color-danger-foreground);
 
-  /* Secondary */
   --color-secondary: var(--color-secondary);
   --color-secondary-foreground: var(--color-secondary-foreground);
+  --color-accent: var(--color-secondary);
 
-  /* Ring */
   --color-ring: var(--color-ring);
 
   /* ─── Legacy aliases (backward compat during migration) ─── */
   --color-bg: var(--color-background);
   --color-text: var(--color-foreground);
-  --color-accent: var(--color-primary);
   --color-ok: var(--color-success);
   --color-warn: var(--color-warning);
   --color-purple: var(--color-secondary);
 
-  /* ─── Typography ─── */
-  --font-sans: 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  /* ─── Typography family ─── */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+
+  /* ─── Typography scale → text-display-2xl etc. utilities ─── */
+  --text-display-2xl: var(--font-size-display-2xl);
+  --text-display-2xl--line-height: var(--line-height-heading);
+  --text-display-2xl--font-weight: var(--font-weight-display-2xl);
+
+  --text-display-xl: var(--font-size-display-xl);
+  --text-display-xl--line-height: var(--line-height-heading);
+  --text-display-xl--font-weight: var(--font-weight-display-xl);
+
+  --text-headline-lg: var(--font-size-headline-lg);
+  --text-headline-lg--line-height: var(--line-height-heading);
+  --text-headline-lg--font-weight: var(--font-weight-headline-lg);
+
+  --text-headline-md: var(--font-size-headline-md);
+  --text-headline-md--line-height: var(--line-height-heading);
+  --text-headline-md--font-weight: var(--font-weight-headline-md);
+
+  --text-body-lg: var(--font-size-body-lg);
+  --text-body-lg--line-height: var(--line-height-body);
+
+  --text-body-base: var(--font-size-body-base);
+  --text-body-base--line-height: var(--line-height-body);
+
+  --text-body-sm: var(--font-size-body-sm);
+  --text-body-sm--line-height: var(--line-height-body);
+
+  --text-label-sm: var(--font-size-label-sm);
+  --text-label-sm--line-height: var(--line-height-body);
+  --text-label-sm--font-weight: var(--font-weight-label-sm);
+
+  /* ─── Radii ─── */
+  --radius-sm: var(--radius-sm);
+  --radius-base: var(--radius-base);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-full: var(--radius-full);
+
+  /* ─── Shadows ─── */
+  --shadow-subtle: var(--shadow-subtle);
+  --shadow-elevated: var(--shadow-elevated);
 }
 
-body {
-  margin: 0;
-  background: var(--color-background);
-  color: var(--color-foreground);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@layer base {
+  html,
+  body {
+    font-family: var(--font-sans);
+    line-height: var(--line-height-body);
+    color: var(--color-foreground);
+    background: var(--color-background);
+  }
+
+  body {
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    line-height: var(--line-height-heading);
+  }
+
+  code, pre, kbd {
+    font-family: var(--font-mono);
+  }
+
+  :focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring-color);
+    outline-offset: var(--focus-ring-offset);
+    border-radius: var(--radius-sm);
+  }
 }
 
 #root {
   height: 100vh;
 }
 
-/* Monospace elements */
-code, pre, .font-mono {
+.font-mono {
   font-family: var(--font-mono);
 }
 
-/* Selection */
 ::selection {
   background: var(--color-primary);
   color: var(--color-primary-foreground);
 }
 
-/* Drawer slide-in animation */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
@@ -92,7 +148,6 @@ code, pre, .font-mono {
   animation: slide-in-right 0.2s ease-out;
 }
 
-/* Prose (typography) — use semantic colors for both light and dark themes */
 .prose {
   --tw-prose-body: var(--color-foreground);
   --tw-prose-headings: var(--color-foreground);
@@ -112,15 +167,11 @@ code, pre, .font-mono {
   --tw-prose-td-borders: var(--color-border);
 }
 
-/* Scrollbar (thin, subtle) */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-foreground-muted); }
 
-/* hljs-* token classes — minimal highlight.js-compatible palette so a future
- * swap to the full package is a drop-in. Used by WikiView's ContentRenderer
- * for content_format='code'/'json'/'yaml'. (US-CLAWKET-WEB-WIKI-005) */
 .hljs-keyword  { color: var(--color-primary); font-weight: 600; }
 .hljs-string   { color: var(--color-success); }
 .hljs-number   { color: var(--color-warning); }

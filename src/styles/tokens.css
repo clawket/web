@@ -1,42 +1,72 @@
-/* ─── Palette Colors (raw values) ─── */
+/*
+ * @clawket/web — design tokens (theme-invariant)
+ *
+ * Sources:
+ *   - Color palette + base scales: Stitch design_tokens.json (semantic only).
+ *     Theme-specific colors live in themes/{dark,light}.css — this file holds
+ *     tokens that do NOT flip with theme: typography, radii, shadows, motion,
+ *     focus-ring geometry.
+ *   - Typography / radii: Stitch DESIGN.md frontmatter (Material 3 IGNORED).
+ *
+ * Bound into Tailwind v4 utilities via the `@theme` block in src/index.css.
+ * Naming follows Tailwind v4's @theme expectations so utilities like
+ * `font-display`, `text-display-2xl`, `rounded-lg`, `shadow-elevated` resolve.
+ */
+
 :root {
-  /* Gray scale — GitHub Dark inspired */
-  --palette-gray-50: #f0f6fc;
-  --palette-gray-100: #e6edf3;
-  --palette-gray-200: #c9d1d9;
-  --palette-gray-300: #b1bac4;
-  --palette-gray-400: #8b949e;
-  --palette-gray-500: #6e7681;
-  --palette-gray-600: #484f58;
-  --palette-gray-700: #30363d;
-  --palette-gray-800: #21262d;
-  --palette-gray-850: #1c2129;
-  --palette-gray-900: #161b22;
-  --palette-gray-950: #0d1117;
+  /* ---- Font families ---- */
+  --font-sans: "Geist", "Geist Sans", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Menlo, monospace;
+  --font-display: "Geist", "Geist Sans", "Instrument Sans", sans-serif;
 
-  /* Blue */
-  --palette-blue-400: #58a6ff;
-  --palette-blue-500: #388bfd;
-  --palette-blue-600: #1f6feb;
+  /* ---- Typography scale ---- */
+  /* Display */
+  --font-size-display-2xl: 2.25rem;     /* 36px */
+  --font-weight-display-2xl: 700;
+  --font-size-display-xl: 1.875rem;     /* 30px */
+  --font-weight-display-xl: 600;
+  /* Headline */
+  --font-size-headline-lg: 1.5rem;      /* 24px */
+  --font-weight-headline-lg: 600;
+  --font-size-headline-md: 1.25rem;     /* 20px */
+  --font-weight-headline-md: 600;
+  /* Body */
+  --font-size-body-lg: 1.125rem;        /* 18px */
+  --font-weight-body-lg: 400;
+  --font-size-body-base: 1rem;          /* 16px */
+  --font-weight-body-base: 400;
+  --font-size-body-sm: 0.875rem;        /* 14px */
+  --font-weight-body-sm: 400;
+  /* Label (mono — file:line, ticket numbers, agent tags) */
+  --font-size-label-sm: 0.75rem;        /* 12px */
+  --font-weight-label-sm: 500;
 
-  /* Green */
-  --palette-green-400: #3fb950;
-  --palette-green-500: #2ea043;
-  --palette-green-600: #238636;
+  --line-height-body: 1.55;
+  --line-height-heading: 1.2;
 
-  /* Yellow / Orange */
-  --palette-yellow-400: #d29922;
-  --palette-yellow-500: #bb8009;
+  /* ---- Radii ---- */
+  --radius-none: 0;
+  --radius-sm: 2px;
+  --radius-base: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
 
-  /* Red */
-  --palette-red-400: #f85149;
-  --palette-red-500: #da3633;
+  /* ---- Shadows ---- */
+  --shadow-none: none;
+  --shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-elevated: 0 2px 8px -2px rgb(0 0 0 / 0.40), 0 1px 4px -1px rgb(0 0 0 / 0.30);
 
-  /* Purple */
-  --palette-purple-400: #bc8cff;
-  --palette-purple-500: #a371f7;
+  /* ---- Motion ---- */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --motion-duration: var(--motion-base);
+  --motion-timing: ease-out;
 
-  /* White / Black */
-  --palette-white: #ffffff;
-  --palette-black: #000000;
+  /* ---- A11y / focus ring ---- */
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  /* focus-ring-color is bound to --color-primary inside themes/{dark,light}.css */
 }

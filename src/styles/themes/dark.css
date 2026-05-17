@@ -1,43 +1,51 @@
-/* ─── Dark Theme — Semantic Variables ─── */
+/*
+ * Dark theme — semantic colors.
+ * Values mirror desktop's `@clawket/ui` packages/ui/src/styles/tokens.css
+ * (Stitch high-contrast minimal workbench, dark default).
+ * Web's semantic variable NAMES are preserved so existing JSX classNames
+ * (bg-surface-low, text-muted, bg-primary, etc.) keep working.
+ */
 :root,
 :root[data-theme="dark"] {
   /* Backgrounds */
-  --color-background: var(--palette-gray-950);
-  --color-surface-low: var(--palette-gray-900);
-  --color-surface: var(--palette-gray-900);
-  --color-surface-high: var(--palette-gray-850);
-  --color-surface-hover: var(--palette-gray-850);
+  --color-background: #0a0a0a;
+  --color-surface-low: #000000;        /* desktop "surface-sunken" — deeper than background */
+  --color-surface: #141414;
+  --color-surface-high: #1f1f1f;
+  --color-surface-hover: #1f1f1f;
   --color-overlay: rgba(0, 0, 0, 0.60);
 
   /* Foreground */
-  --color-foreground: var(--palette-gray-100);
-  --color-foreground-muted: var(--palette-gray-400);
+  --color-foreground: #ededed;
+  --color-foreground-muted: #a1a1a1;   /* desktop "muted" */
+  --color-foreground-subtle: #525252;  /* desktop "subtle" */
 
   /* Border */
-  --color-border: var(--palette-gray-700);
-  --color-border-muted: var(--palette-gray-600);
+  --color-border: #262626;
+  --color-border-muted: #525252;
 
-  /* Primary (accent) */
-  --color-primary: var(--palette-blue-400);
-  --color-primary-hover: var(--palette-blue-500);
-  --color-primary-foreground: var(--palette-white);
+  /* Primary — high-contrast workbench (white in dark, black in light) */
+  --color-primary: #ffffff;
+  --color-primary-hover: #e5e5e5;
+  --color-primary-foreground: #0a0a0a; /* desktop "on-primary" */
 
   /* Success */
-  --color-success: var(--palette-green-400);
-  --color-success-foreground: var(--palette-white);
+  --color-success: #22c55e;
+  --color-success-foreground: #0a0a0a;
 
   /* Warning */
-  --color-warning: var(--palette-yellow-400);
-  --color-warning-foreground: var(--palette-white);
+  --color-warning: #f59e0b;
+  --color-warning-foreground: #0a0a0a;
 
   /* Danger */
-  --color-danger: var(--palette-red-400);
-  --color-danger-foreground: var(--palette-white);
+  --color-danger: #ef4444;
+  --color-danger-foreground: #ffffff;
 
-  /* Secondary (purple) */
-  --color-secondary: var(--palette-purple-400);
-  --color-secondary-foreground: var(--palette-white);
+  /* Secondary — Stitch purple accent (desktop "accent") */
+  --color-secondary: #8b5cf6;
+  --color-secondary-foreground: #ffffff;
 
-  /* Focus ring */
-  --color-ring: var(--palette-blue-400);
+  /* Focus ring (bound by tokens.css geometry) */
+  --color-ring: var(--color-primary);
+  --focus-ring-color: var(--color-primary);
 }
