@@ -159,27 +159,29 @@ function KpiCard({ status, count }: KpiCardProps) {
   );
 }
 
-interface OverallProgressCardProps {
+export interface OverallProgressCardProps {
   done: number;
+  cancelled: number;
   inProgress: number;
   todo: number;
   blocked: number;
   total: number;
 }
 
-function OverallProgressCard({
+export function OverallProgressCard({
   done,
+  cancelled,
   inProgress,
   todo,
   blocked,
   total,
 }: OverallProgressCardProps) {
+  const closed = done + cancelled;
   const percent =
-    total > 0 ? (Math.floor((done * 10000) / total) / 100).toFixed(2) : '0.00';
-  const segTotal = done + inProgress + todo + blocked;
-  const pDone = segTotal > 0 ? (done / segTotal) * 100 : 0;
-  const pInProgress = segTotal > 0 ? (inProgress / segTotal) * 100 : 0;
-  const pBlocked = segTotal > 0 ? (blocked / segTotal) * 100 : 0;
+    total > 0 ? (Math.floor((closed * 10000) / total) / 100).toFixed(2) : '0.00';
+  const pClosed = total > 0 ? (closed / total) * 100 : 0;
+  const pInProgress = total > 0 ? (inProgress / total) * 100 : 0;
+  const pBlocked = total > 0 ? (blocked / total) * 100 : 0;
 
   return (
     <section
@@ -205,8 +207,8 @@ function OverallProgressCard({
         aria-hidden
         className="w-full h-2 rounded-full bg-surface-high overflow-hidden flex"
       >
-        {pDone > 0 && (
-          <div className="bg-success h-full" style={{ width: `${pDone}%` }} />
+        {pClosed > 0 && (
+          <div className="bg-success h-full" style={{ width: `${pClosed}%` }} />
         )}
         {pInProgress > 0 && (
           <div className="bg-warning h-full" style={{ width: `${pInProgress}%` }} />
@@ -218,7 +220,7 @@ function OverallProgressCard({
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
         <span className="inline-flex items-center gap-1">
           <span aria-hidden className="w-2 h-2 rounded-full bg-success" />
-          Closed {done}
+          Closed {closed}
         </span>
         <span className="inline-flex items-center gap-1">
           <span aria-hidden className="w-2 h-2 rounded-full bg-warning" />
@@ -448,6 +450,7 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
 
       <OverallProgressCard
         done={counts.done}
+        cancelled={counts.cancelled}
         inProgress={counts.in_progress}
         todo={counts.todo}
         blocked={counts.blocked}
