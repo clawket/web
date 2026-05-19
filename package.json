@@ -1,7 +1,7 @@
 {
   "name": "@clawket/web",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Structured task contracts for LLM coding agents — Clawket React + Vite dashboard, distributed as a GitHub Release tarball",
   "type": "module",
   "scripts": {
