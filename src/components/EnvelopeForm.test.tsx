@@ -101,8 +101,15 @@ describe('EnvelopeForm', () => {
 
     render(<EnvelopeForm taskId="TASK-EMPTY" />);
 
+    // ADR-0001 §Backwards Compatibility: envelope-less tasks are
+    // legitimate, so the empty state must read as opt-in, not as a
+    // broken envelope. Validating an empty draft would surface false
+    // "required field missing" warnings (the LM-11028 lying-UI bug)
+    // — verify the suppression copy instead.
     await waitFor(() => {
-      expect(screen.getByText('No envelope yet')).toBeInTheDocument();
+      expect(
+        screen.getByText('No envelope — optional; start editing to draft one'),
+      ).toBeInTheDocument();
     });
 
     // List inputs should be present and empty.

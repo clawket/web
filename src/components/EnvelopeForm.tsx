@@ -201,8 +201,17 @@ export default function EnvelopeForm({ taskId, onSaved }: EnvelopeFormProps) {
   // LM-151: debounced validation against POST /tasks/:id/envelope/validate.
   // Token-based race guard: if the user keeps typing, in-flight responses
   // for stale drafts are dropped instead of overwriting newer results.
+  //
+  // Suppression rule: a task with no active envelope (`version === null`)
+  // AND no in-progress edit is a legitimately envelope-less task per
+  // ADR-0001 §Backwards Compatibility — validating an empty draft would
+  // surface "required field missing" warnings for a contract the user
+  // never opted into, restating the lying-UI bug from the inverse angle.
+  // Validation kicks in the moment the draft becomes dirty (user begins
+  // authoring) or once an envelope exists.
+  const shouldValidate = !loading && (version !== null || dirty);
   useEffect(() => {
-    if (loading) return;
+    if (!shouldValidate) return;
     const handle = window.setTimeout(() => {
       const token = ++validationToken.current;
       setValidating(true);
@@ -223,10 +232,13 @@ export default function EnvelopeForm({ taskId, onSaved }: EnvelopeFormProps) {
         });
     }, VALIDATION_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [draft, taskId, loading]);
+  }, [draft, taskId, shouldValidate]);
 
   const violationsByField = useMemo(() => {
     const map = new Map<string, EnvelopeViolation[]>();
+    // When the suppression gate is closed (envelope-less + clean draft),
+    // hide any stale violations from a prior validate cycle.
+    if (!shouldValidate) return map;
     for (const v of violations) {
       // Per-field violations bucket under the field name; nested-field
       // violations (e.g. preconditions[0]) bucket under their array
@@ -237,7 +249,7 @@ export default function EnvelopeForm({ taskId, onSaved }: EnvelopeFormProps) {
       map.set(key, bucket);
     }
     return map;
-  }, [violations]);
+  }, [violations, shouldValidate]);
 
   function setField(field: EnvelopeField, value: unknown) {
     setDraft((prev) => {
@@ -301,10 +313,14 @@ export default function EnvelopeForm({ taskId, onSaved }: EnvelopeFormProps) {
     <form onSubmit={handleSubmit} className="space-y-3" aria-label="envelope-form">
       <div className="flex items-center justify-between text-xs text-muted">
         <span>
-          {version !== null ? `Active version: v${version}` : 'No envelope yet'}
+          {version !== null
+            ? `Active version: v${version}`
+            : dirty
+              ? 'Draft envelope (unsigned)'
+              : 'No envelope — optional; start editing to draft one'}
         </span>
         <span className="flex items-center gap-2">
-          {validating && <span className="text-muted">validating...</span>}
+          {shouldValidate && validating && <span className="text-muted">validating...</span>}
           {dirty && <span className="text-warning">unsaved changes</span>}
         </span>
       </div>

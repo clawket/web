@@ -212,22 +212,28 @@ describe('EnvelopeForm — real-time validation (LM-151)', () => {
     expect(violation).toHaveAttribute('data-field', 'success_criteria[0]');
   });
 
-  it('renders no violations when daemon returns 404 (no envelope yet)', async () => {
+  it('suppresses validation when no envelope exists and draft is clean (LM-11028)', async () => {
+    // ADR-0001 §Backwards Compatibility: a task with no active envelope
+    // is legitimately envelope-less; running validation on an empty
+    // draft would surface false "required field missing" warnings for a
+    // contract the user never opted into. Validation is gated on
+    // `version !== null || dirty` — clean envelope-less forms must not
+    // call the daemon at all.
     mockedApi.getTaskEnvelope.mockResolvedValue(null);
     mockedApi.validateTaskEnvelope.mockResolvedValue(null);
 
     render(<EnvelopeForm taskId="TASK-NONE" />);
 
     await waitFor(() => {
-      expect(screen.getByText('No envelope yet')).toBeInTheDocument();
+      expect(
+        screen.getByText('No envelope — optional; start editing to draft one'),
+      ).toBeInTheDocument();
     });
 
-    // Validation effect still fires — but a null result means no
-    // violations are surfaced. The form remains usable.
-    await waitFor(() => {
-      expect(mockedApi.validateTaskEnvelope).toHaveBeenCalled();
-    });
-
+    // Give the debounced validation effect ample time to fire — it must
+    // not, because the gate suppresses validation in this state.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(mockedApi.validateTaskEnvelope).not.toHaveBeenCalled();
     expect(document.querySelectorAll('[data-severity]').length).toBe(0);
   });
 });

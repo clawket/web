@@ -90,7 +90,9 @@ export default function CreateTaskModal({ unitId, onClose, onCreated }: CreateTa
         <Modal.Body>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <Label>Title</Label>
+              <Label>
+                Title <span className="text-danger">*</span>
+              </Label>
               <Input
                 type="text"
                 value={title}
