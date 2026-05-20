@@ -3,6 +3,7 @@ import type { Plan, Unit, Task, Cycle, TimelineEvent } from '../types';
 import api from '../api';
 import { Badge, type BadgeProps } from './ui';
 import { cn } from '../lib/cn';
+import { findActivePlan, findActiveTask } from './SummaryView.helpers';
 
 interface SummaryViewProps {
   projectId: string;
@@ -342,10 +343,6 @@ function TimelineRow({ event }: TimelineRowProps) {
   );
 }
 
-function findActivePlan(plans: Plan[]): Plan | null {
-  return plans.find((p) => p.status === 'active') ?? plans[0] ?? null;
-}
-
 function findActiveUnitTitle(
   cycles: Cycle[],
   units: Unit[],
@@ -426,8 +423,7 @@ export default function SummaryView({ projectId, onSelectTask }: SummaryViewProp
   for (const t of tasks) counts[t.status] += 1;
 
   const activePlan = findActivePlan(plans);
-  const activeTask =
-    tasks.find((t) => t.status === 'in_progress') ?? tasks[0] ?? null;
+  const activeTask = findActiveTask(tasks);
   const recentEvents = timeline.slice(0, 5);
   const unitTitle = findActiveUnitTitle(cycles, units);
 
