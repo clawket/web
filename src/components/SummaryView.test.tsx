@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { OverallProgressCard, findActivePlan, findActiveTask } from './SummaryView';
+import { OverallProgressCard } from './SummaryView';
+import { findActivePlan, findActiveTask } from './SummaryView.helpers';
 import type { Plan, Task } from '../types';
 
 // Minimal Plan / Task fixtures — only the fields findActivePlan / findActiveTask
